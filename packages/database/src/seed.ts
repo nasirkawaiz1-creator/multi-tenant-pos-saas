@@ -10,7 +10,7 @@ import {
   tenants,
   users,
   withTenantContext,
-} from "./index";
+} from "./index.js";
 
 const DEMO_PASSWORD = "demo1234";
 
