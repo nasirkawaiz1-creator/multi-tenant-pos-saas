@@ -1,24 +1,38 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ChangeEvent, type FormEvent } from 'react';
+
+interface StoreProfile {
+  name: string;
+  details: string;
+}
+
+interface BillItem {
+  id: number;
+  barcode: string;
+  name: string;
+  qty: number;
+  price: number;
+  total: number;
+}
 
 export default function UniversalPOS() {
-  const [tenantId, setTenantId] = useState('imdad-cosmetics');
-  const [storeInfo, setStoreInfo] = useState({ name: 'Loading...', details: '' });
+  const [tenantId, setTenantId] = useState<string>('imdad-cosmetics');
+  const [storeInfo, setStoreInfo] = useState<StoreProfile>({ name: 'Loading...', details: '' });
   
   // Customer Details State
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
-  const [customerAddress, setCustomerAddress] = useState('');
+  const [customerName, setCustomerName] = useState<string>('');
+  const [customerPhone, setCustomerPhone] = useState<string>('');
+  const [customerAddress, setCustomerAddress] = useState<string>('');
 
   // Item Form State
-  const [barcode, setBarcode] = useState('');
-  const [itemName, setItemName] = useState('');
-  const [price, setPrice] = useState('');
-  const [billItems, setBillItems] = useState([]);
+  const [barcode, setBarcode] = useState<string>('');
+  const [itemName, setItemName] = useState<string>('');
+  const [price, setPrice] = useState<string>('');
+  const [billItems, setBillItems] = useState<BillItem[]>([]);
 
   // Store Profiles Data
-  const storeProfiles = {
+  const storeProfiles: Record<string, StoreProfile> = {
     'imdad-cosmetics': {
       name: 'Imdad Cosmetics',
       details: 'Shop # B1-A, Kamil Plaza, Basement Sara Bazar, Rawalpindi | Ph: 0340-5950563',
@@ -32,19 +46,19 @@ export default function UniversalPOS() {
   useEffect(() => {
     const currentTenant = process.env.NEXT_PUBLIC_TENANT_ID || 'imdad-cosmetics';
     setTenantId(currentTenant);
-  setStoreInfo(storeProfiles[currentTenant as keyof typeof storeProfiles] || { name: 'Universal POS Store', details: 'Rawalpindi' });
+    setStoreInfo(storeProfiles[currentTenant as keyof typeof storeProfiles] || { name: 'Universal POS Store', details: 'Rawalpindi' });
   }, []);
 
   // Handle Bulk CSV Import for existing inventory
-  const handleCSVImport = (event) => {
-    const file = event.target.files[0];
+  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (file) {
       alert(`کامیابی کے ساتھ '${file.name}' فائل کا ڈیٹا اس دکان کے سسٹم میں امپورٹ ہو گیا ہے!`);
     }
   };
 
   // Add Item to Bill with Auto Barcode Generation
-  const handleAddItem = (e) => {
+  const handleAddItem = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!price) {
       alert('براہ کرم کم از کم قیمت (Price) درج کریں!');
@@ -54,7 +68,7 @@ export default function UniversalPOS() {
     const finalBarcode = barcode.trim() !== '' ? barcode : `AUTO-${Math.floor(100000 + Math.random() * 900000)}`;
     const finalName = itemName.trim() !== '' ? itemName : `Product (${finalBarcode})`;
 
-    const newItem = {
+    const newItem: BillItem = {
       id: Date.now(),
       barcode: finalBarcode,
       name: finalName,
@@ -161,7 +175,7 @@ export default function UniversalPOS() {
         <tbody>
           {billItems.length === 0 ? (
             <tr>
-              <td colSpan="5" style={{ textAlign: 'center', padding: '15px', color: '#888' }}>
+              <td colSpan={5} style={{ textAlign: 'center', padding: '15px', color: '#888' }}>
                 کوئی آئٹم ایڈ نہیں ہوئی۔ بارکوڈ اسکین کریں یا نام اور قیمت درج کر کے ایڈ کریں۔
               </td>
             </tr>
