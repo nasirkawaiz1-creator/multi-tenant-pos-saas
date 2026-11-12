@@ -32,7 +32,7 @@ export default function UniversalPOS() {
   useEffect(() => {
     const currentTenant = process.env.NEXT_PUBLIC_TENANT_ID || 'imdad-cosmetics';
     setTenantId(currentTenant);
-    setStoreInfo(storeProfiles[currentTenant] || { name: 'Universal POS Store', details: 'Rawalpindi' });
+  setStoreInfo(storeProfiles[currentTenant as keyof typeof storeProfiles] || { name: 'Universal POS Store', details: 'Rawalpindi' });
   }, []);
 
   // Handle Bulk CSV Import for existing inventory
