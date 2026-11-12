@@ -21,6 +21,11 @@ interface CartItem {
   quantity: number;
 }
 
+interface StoreProfile {
+  name: string;
+  details: string;
+}
+
 const TAX_RATE = 0.08;
 
 export default function CheckoutPage() {
@@ -32,10 +37,39 @@ export default function CheckoutPage() {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
 
+  const [tenantId, setTenantId] = useState<string>("imdad-cosmetics");
+  const [storeInfo, setStoreInfo] = useState<StoreProfile>({
+    name: "Loading...",
+    details: "",
+  });
+
+  // Imdad Cosmetics Store Profile with Updated Bara Bazar Address and Phone Number
+  const storeProfiles: Record<string, StoreProfile> = {
+    "imdad-cosmetics": {
+      name: "Imdad Cosmetics",
+      details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi | Ph: 03451523394",
+    },
+    "style350": {
+      name: "Style 350",
+      details: "Main Market, Rawalpindi | Local Retail & Cosmetics,|Ph:03005049350",
+    },
+  };
+
   useEffect(() => {
     if (!getToken()) {
       window.location.href = "/login";
     }
+  }, []);
+
+  useEffect(() => {
+    const currentTenant = process.env.NEXT_PUBLIC_TENANT_ID || "imdad-cosmetics";
+    setTenantId(currentTenant);
+    setStoreInfo(
+      storeProfiles[currentTenant as keyof typeof storeProfiles] || {
+        name: "Universal POS Store",
+        details: "Rawalpindi",
+      }
+    );
   }, []);
 
   useEffect(() => {
@@ -122,6 +156,10 @@ export default function CheckoutPage() {
               <Badge variant="success">Order Complete</Badge>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="border-b border-slate-200 pb-3 text-center">
+                <h2 className="font-bold text-lg">{storeInfo.name}</h2>
+                <p className="text-xs text-slate-500">{storeInfo.details}</p>
+              </div>
               <p className="text-sm text-slate-500">Order #{receipt.id.slice(0, 8)}</p>
               <div className="divide-y divide-slate-100">
                 {receipt.items?.map((item) => (
@@ -174,6 +212,11 @@ export default function CheckoutPage() {
         </nav>
       }
     >
+      <div className="mb-4 border-b border-slate-200 pb-3">
+        <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
+        <p className="text-sm text-slate-600 font-medium">{storeInfo.details}</p>
+      </div>
+
       <PageHeader title="Checkout Terminal" description="Search products and complete sales" />
 
       <div className="grid gap-8 lg:grid-cols-3">
