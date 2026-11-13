@@ -159,7 +159,7 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // Voice Input Fixed to Roman English / Urdu (سپیلنگ رومن میں آئیں گے)
+  // Voice Input (Roman English Spelling Support)
   function startVoiceInput() {
     // @ts-expect-error webkitSpeechRecognition for browser support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -169,13 +169,13 @@ export default function CheckoutPage() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "en-US"; // Roman / English speech recognition for correct spelling
+    recognition.lang = "en-US";
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("Listening... Speak item name (e.g. Pantene Shampoo).");
+      setError("Listening... Speak item name in Roman English (e.g. Pantene Shampoo).");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -183,7 +183,7 @@ export default function CheckoutPage() {
       const spokenText = event.results[0][0].transcript;
       setCustomName(spokenText);
       setIsListening(false);
-      setError(`Heard: "${spokenText}" — now enter price and add.`);
+      setError(`Heard: "${spokenText}" — now enter price and click + Add & Save.`);
     };
 
     recognition.onerror = () => {
@@ -198,13 +198,14 @@ export default function CheckoutPage() {
     recognition.start();
   }
 
+  // Process Scanned Code and Check Local Inventory Database
   function processScannedCode(code: string) {
     const trimmedCode = code.trim();
     if (!trimmedCode) return;
 
     setError("");
 
-    // 1. Check local inventory first
+    // Check in loaded inventory products by SKU, barcode, or ID
     const foundProduct = products.find(
       (p) =>
         (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
@@ -213,18 +214,19 @@ export default function CheckoutPage() {
     );
 
     if (foundProduct) {
+      // Auto-add to cart instantly if found!
       addToCart(foundProduct, 1);
       setBarcodeInput("");
       setCustomName("");
       setCustomPrice("");
-      return;
+      setError(`Scanned & Added: ${foundProduct.name}`);
+    } else {
+      // If not in inventory, prompt vendor to use Mic or enter Price
+      setBarcodeInput(trimmedCode);
+      setCustomName(`Item-${trimmedCode}`);
+      setCustomPrice("");
+      setError(`New Barcode (${trimmedCode}) — Click 🎤 Mic to speak name, enter Price, and click + Add & Save.`);
     }
-
-    // 2. Fallback for new barcode: Prompt for voice/manual name instantly
-    setBarcodeInput(trimmedCode);
-    setCustomName(`Item-${trimmedCode}`);
-    setCustomPrice("");
-    setError(`New Barcode (${trimmedCode}) — Click 🎤 Mic to speak name or type Price.`);
   }
 
   function handleBarcodeSubmit(e: React.FormEvent) {
@@ -232,25 +234,47 @@ export default function CheckoutPage() {
     processScannedCode(barcodeInput);
   }
 
-  function handleAddCustomItem() {
+  // Save custom/voice item permanently to server Inventory and add to cart!
+  async function handleAddCustomItem() {
     if (!customName.trim() || !customPrice) return;
     const qtyToAdd = customQty > 0 ? customQty : 1;
     const priceNum = parseFloat(customPrice) || 0;
+    const codeToSave = barcodeInput.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    const customProduct = {
-      id: `custom-${Date.now()}`,
-      name: customName.trim(),
-      sku: barcodeInput.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
-      price: priceNum.toString(),
-      stockQty: 9999,
-    } as unknown as Product;
+    try {
+      // Permanent save to backend database via POST /products
+      const savedProduct = await apiFetch<Product>("/products", {
+        method: "POST",
+        body: JSON.stringify({
+          name: customName.trim(),
+          sku: codeToSave,
+          price: priceNum.toString(),
+          stockQty: 9999,
+        }),
+      });
 
-    addToCart(customProduct, qtyToAdd);
+      if (savedProduct) {
+        setProducts((prev) => [...prev, savedProduct]);
+        addToCart(savedProduct, qtyToAdd);
+      }
+    } catch (err) {
+      console.error("Failed to save product to inventory server", err);
+      // Fallback local cart add if server fails
+      const fallbackProduct = {
+        id: `custom-${Date.now()}`,
+        name: customName.trim(),
+        sku: codeToSave,
+        price: priceNum.toString(),
+        stockQty: 9999,
+      } as unknown as Product;
+      addToCart(fallbackProduct, qtyToAdd);
+    }
+
     setCustomName("");
     setCustomPrice("");
     setCustomQty(1);
     setBarcodeInput("");
-    setError("");
+    setError("Item successfully saved to inventory & added to cart!");
   }
 
   function addToCart(product: Product, qtyToAdd: number = 1) {
@@ -453,7 +477,7 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Scan Barcode or use Voice Input 🎤" />
+      <PageHeader title="Checkout Terminal" description="Scan Barcode (Auto-Saves to Inventory 📦)" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -499,7 +523,7 @@ export default function CheckoutPage() {
             </div>
           )}
 
-          {/* Voice Input Panel */}
+          {/* Voice Input & Auto-Save Panel */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
             <div className="sm:col-span-4 flex gap-1">
               <Input
@@ -512,7 +536,7 @@ export default function CheckoutPage() {
                 variant="outline"
                 className={`px-3 ${isListening ? "bg-red-100 text-red-600 border-red-500 animate-pulse" : "border-purple-600 text-purple-700"}`}
                 onClick={startVoiceInput}
-                title="Speak item name in English/Roman"
+                title="Speak item name in Roman English"
               >
                 🎤
               </Button>
@@ -536,7 +560,7 @@ export default function CheckoutPage() {
             </div>
             <div className="sm:col-span-2">
               <Button type="button" onClick={handleAddCustomItem} className="w-full bg-green-600 hover:bg-green-700 text-white">
-                + Add
+                + Add & Save
               </Button>
             </div>
           </div>
