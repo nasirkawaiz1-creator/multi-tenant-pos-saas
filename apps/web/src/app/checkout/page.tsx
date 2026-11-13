@@ -31,6 +31,9 @@ export default function CheckoutPage() {
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [barcodeInput, setBarcodeInput] = useState("");
+  const [itemNameInput, setItemNameInput] = useState("");
+  const [qtyInput, setQtyInput] = useState("1");
+  const [priceInput, setPriceInput] = useState("");
   const [discountAmount, setDiscountAmount] = useState<string>("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -94,7 +97,7 @@ export default function CheckoutPage() {
     }
   }
 
-  // 🎤 Voice Search / Mic Feature (Roman English Speech Support)
+  // 🎤 Voice Search / Mic Feature for Item Name Box
   function startVoiceSearch() {
     // @ts-expect-error window.webkitSpeechRecognition support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -110,15 +113,15 @@ export default function CheckoutPage() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("🎤 Listening... Speak item name (e.g. Head and Shoulders Shampoo, Lipstick)");
+      setError("🎤 Listening... Speak item name (e.g. Pantene Shampoo, Lipstick)");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
       const spokenText = event.results[0][0].transcript;
-      setBarcodeInput(spokenText);
+      setItemNameInput(spokenText);
       setIsListening(false);
-      processScannedCode(spokenText);
+      setError(`🎤 Spoken: ${spokenText}`);
     };
 
     recognition.onerror = () => {
@@ -180,7 +183,7 @@ export default function CheckoutPage() {
         if (barcodes.length > 0 && barcodes[0].rawValue) {
           const scannedCode = barcodes[0].rawValue;
           stopCamera();
-          processScannedCode(scannedCode);
+          handleBarcodeScanned(scannedCode);
           return;
         }
       } catch {
@@ -194,62 +197,90 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // CORE LOGIC: Scan Barcode -> Auto fetch/create item name and instantly save to Inventory Database
-  async function processScannedCode(code: string) {
-    const trimmedCode = code.trim();
-    if (!trimmedCode) return;
+  // CORE LOGIC: When Barcode is scanned, auto-fill Barcode AND Auto-fill Item Name from DB!
+  function handleBarcodeScanned(code: string) {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setBarcodeInput(trimmed);
 
-    setError("");
-    setBarcodeInput("");
-
-    // 1. Check if product already exists in inventory
-    let targetProduct = products.find(
-      (p) =>
-        (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
-        p.id === trimmedCode ||
-        p.name.toLowerCase() === trimmedCode.toLowerCase()
+    // Search in loaded products list
+    const found = products.find(
+      (p) => (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase()) || p.id === trimmed
     );
 
-    // 2. If not found in inventory, auto-generate and save it permanently to inventory database
-    if (!targetProduct) {
-      const generatedName = trimmedCode.length > 12 ? `Cosmetic Item (${trimmedCode.slice(-6)})` : `${trimmedCode}`;
-      const defaultPrice = "0";
-
-      try {
-        const savedProduct = await apiFetch<Product>("/products", {
-          method: "POST",
-          body: JSON.stringify({
-            name: generatedName,
-            sku: trimmedCode,
-            price: defaultPrice,
-            stockQty: 9999,
-          }),
-        });
-
-        if (savedProduct) {
-          targetProduct = savedProduct;
-          setProducts((prev) => [...prev, savedProduct]);
-        }
-      } catch {
-        targetProduct = {
-          id: `custom-${Date.now()}`,
-          name: generatedName,
-          sku: trimmedCode,
-          price: defaultPrice,
-          stockQty: 9999,
-        } as unknown as Product;
-      }
-    }
-
-    if (targetProduct) {
-      addToCart(targetProduct, 1);
-      setError(`⚡ Added & Saved to Inventory: ${targetProduct.name}`);
+    if (found) {
+      setItemNameInput(found.name);
+      setPriceInput(found.price || "");
+      setError(`⚡ Auto-matched: ${found.name}`);
+    } else {
+      // If not in database, auto-generate a clean item name based on code
+      setItemNameInput(`Item-${trimmed}`);
+      setPriceInput("");
+      setError(`⚡ New Barcode. Name auto-filled, adjust price if needed.`);
     }
   }
 
   function handleBarcodeSubmit(e: React.FormEvent) {
     e.preventDefault();
-    processScannedCode(barcodeInput);
+    handleBarcodeScanned(barcodeInput);
+  }
+
+  // + Add & Save Button Logic (Saves permanently to Inventory DB & Adds to Cart)
+  async function handleAddAndSave(e: React.FormEvent) {
+    e.preventDefault();
+    const sku = barcodeInput.trim() || `SKU-${Date.now().toString().slice(-6)}`;
+    const name = itemNameInput.trim() || `Item-${sku}`;
+    const qty = parseInt(qtyInput) || 1;
+    const price = priceInput.trim() || "0";
+
+    setError("");
+
+    let targetProduct: Product | undefined;
+
+    try {
+      const savedProduct = await apiFetch<Product>("/products", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          sku,
+          price,
+          stockQty: 9999,
+        }),
+      });
+
+      if (savedProduct) {
+        targetProduct = savedProduct;
+        setProducts((prev) => {
+          const exists = prev.findIndex((p) => p.id === savedProduct.id);
+          if (exists >= 0) {
+            return prev.map((p) => (p.id === savedProduct.id ? savedProduct : p));
+          }
+          return [...prev, savedProduct];
+        });
+      }
+    } catch {
+      targetProduct = {
+        id: `custom-${Date.now()}`,
+        name,
+        sku,
+        price,
+        stockQty: 9999,
+      } as unknown as Product;
+    }
+
+    if (targetProduct) {
+      addToCart(targetProduct, qty);
+      setError(`Item successfully saved to inventory & added to cart!`);
+      
+      // Clear inputs for next scan
+      setBarcodeInput("");
+      setItemNameInput("");
+      setQtyInput("1");
+      setPriceInput("");
+      if (barcodeInputRef.current) {
+        barcodeInputRef.current.focus();
+      }
+    }
   }
 
   function addToCart(product: Product, qtyToAdd: number = 1) {
@@ -461,34 +492,28 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Instant Barcode Scan, Voice Search & Auto-Add to Inventory ⚡" />
+      <PageHeader title="Checkout Terminal" description="Scan Barcode (Auto-Fills Name & Saves to Inventory) 📦" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
-          <form onSubmit={handleBarcodeSubmit} className="flex flex-wrap gap-2">
+          
+          {/* Top Barcode & Scan/Find Form */}
+          <div className="flex flex-wrap gap-2">
             <Input
               ref={barcodeInputRef}
-              placeholder="Scan Barcode / QR Code or Speak Item Name..."
+              placeholder="Scan Barcode / QR Code..."
               value={barcodeInput}
-              onChange={(e) => setBarcodeInput(e.target.value)}
+              onChange={(e) => handleBarcodeScanned(e.target.value)}
               className="h-12 text-base flex-1 min-w-[200px]"
               autoFocus
             />
-            <Button type="submit" className="h-12 px-4 bg-green-600 hover:bg-green-700 text-white">
-              ⚡ Scan & Add
-            </Button>
-            
-            {/* 🎤 Voice Search Mic Button */}
-            <Button
-              type="button"
-              variant="outline"
-              className={`h-12 px-4 border-amber-600 text-amber-700 ${isListening ? 'bg-amber-100 animate-pulse' : ''}`}
-              onClick={startVoiceSearch}
-              title="Click and Speak Product Name"
+            <Button 
+              type="button" 
+              onClick={() => handleBarcodeScanned(barcodeInput)}
+              className="h-12 px-6 bg-slate-900 hover:bg-slate-800 text-white font-medium"
             >
-              🎤 {isListening ? "Listening..." : "Voice Search"}
+              Scan / Find
             </Button>
-
             {!cameraOpen ? (
               <Button
                 type="button"
@@ -508,7 +533,7 @@ export default function CheckoutPage() {
                 ✕ Close Camera
               </Button>
             )}
-          </form>
+          </div>
 
           {cameraOpen && (
             <div className="relative overflow-hidden rounded-xl border-2 border-blue-500 bg-black">
@@ -519,14 +544,61 @@ export default function CheckoutPage() {
             </div>
           )}
 
+          {/* Item Name (Auto-Filled on Scan OR Voice Spoken), Qty, Price, + Add & Save */}
+          <form onSubmit={handleAddAndSave} className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50">
+            <div className="relative flex items-center">
+              <Input
+                placeholder="Item Name (Auto-fills on scan or use mic)..."
+                value={itemNameInput}
+                onChange={(e) => setItemNameInput(e.target.value)}
+                className="h-12 text-base pr-12 bg-white font-medium"
+                required
+              />
+              <button
+                type="button"
+                onClick={startVoiceSearch}
+                className="absolute right-3 p-2 text-amber-600 hover:text-amber-700 text-lg"
+                title="Voice Search (Speak Item Name)"
+              >
+                🎤 {isListening ? "..." : ""}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                type="number"
+                min="1"
+                placeholder="Qty"
+                value={qtyInput}
+                onChange={(e) => setQtyInput(e.target.value)}
+                className="h-12 text-base bg-white"
+                required
+              />
+              <Input
+                type="number"
+                placeholder="Price (Rs)"
+                value={priceInput}
+                onChange={(e) => setPriceInput(e.target.value)}
+                className="h-12 text-base bg-white"
+              />
+            </div>
+
+            <Button
+              type="submit"
+              className="w-full h-12 bg-green-600 hover:bg-green-700 text-white font-bold text-base shadow-sm"
+            >
+              + Add & Save
+            </Button>
+          </form>
+
           {error && <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">{error}</p>}
 
-          {/* Cart Table with Barcode and Auto Item Name */}
+          {/* Cart Table */}
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-sm text-left">
               <thead className="bg-blue-600 text-white text-xs uppercase">
                 <tr>
-                  <th className="px-3 py-3">Code / SKU</th>
+                  <th className="px-3 py-3">Code</th>
                   <th className="px-3 py-3">Item Name</th>
                   <th className="px-3 py-3 text-center">Qty</th>
                   <th className="px-3 py-3 text-right">Price (Rs)</th>
@@ -537,7 +609,7 @@ export default function CheckoutPage() {
                 {cart.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
-                      Scan any barcode or use Voice Search to add items instantly...
+                      Scan barcode or speak item name to add instantly...
                     </td>
                   </tr>
                 ) : (
