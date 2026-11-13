@@ -27,8 +27,6 @@ interface StoreProfile {
   phone: string;
 }
 
-const TAX_RATE = 0.08;
-
 export default function CheckoutPage() {
   const router = useRouter();
   const [search, setSearch] = useState("");
@@ -36,6 +34,7 @@ export default function CheckoutPage() {
   const [customName, setCustomName] = useState("");
   const [customPrice, setCustomPrice] = useState("");
   const [customQty, setCustomQty] = useState<number>(1);
+  const [discountAmount, setDiscountAmount] = useState<string>("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [receipt, setReceipt] = useState<Order | null>(null);
@@ -221,8 +220,8 @@ export default function CheckoutPage() {
     (sum, item) => sum + parseFloat(item.product.price) * item.quantity,
     0
   );
-  const tax = Math.round(subtotal * TAX_RATE * 100) / 100;
-  const total = Math.round((subtotal + tax) * 100) / 100;
+  const discountVal = parseFloat(discountAmount) || 0;
+  const total = Math.max(0, Math.round((subtotal - discountVal) * 100) / 100);
 
   async function completeSale() {
     if (cart.length === 0) return;
@@ -241,6 +240,7 @@ export default function CheckoutPage() {
       });
       setReceipt(order);
       setCart([]);
+      setDiscountAmount("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Checkout failed");
     } finally {
@@ -265,8 +265,8 @@ export default function CheckoutPage() {
       `${itemsText}\n` +
       `--------------------------------\n` +
       `Subtotal: Rs ${receipt.subtotal}\n` +
-      `Tax (8%): Rs ${receipt.tax}\n` +
-      `*Grand Total: Rs ${receipt.total}*\n` +
+      (discountVal > 0 ? `Discount: -Rs ${discountVal}\n` : "") +
+      `*Grand Total: Rs ${total}*\n` +
       `--------------------------------\n` +
       `Thank you for shopping with us!`;
 
@@ -274,7 +274,6 @@ export default function CheckoutPage() {
     let url = `https://wa.me/?text=${encodedMessage}`;
     
     if (targetPhone && targetPhone.trim().length > 5) {
-      // Clean phone number (remove dashes, spaces, ensure country code if needed)
       const cleanPhone = targetPhone.replace(/[^0-9]/g, "");
       url = `https://wa.me/${cleanPhone}?text=${encodedMessage}`;
     }
@@ -313,13 +312,15 @@ export default function CheckoutPage() {
                   <span>Subtotal</span>
                   <span>Rs {receipt.subtotal}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Tax (8%)</span>
-                  <span>Rs {receipt.tax}</span>
-                </div>
+                {discountVal > 0 && (
+                  <div className="flex justify-between text-green-600 font-medium">
+                    <span>Discount</span>
+                    <span>-Rs {discountVal}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-lg font-bold">
-                  <span>Total</span>
-                  <span>Rs {receipt.total}</span>
+                  <span>Grand Total</span>
+                  <span>Rs {total}</span>
                 </div>
               </div>
 
@@ -532,10 +533,18 @@ export default function CheckoutPage() {
                   <span>Subtotal</span>
                   <span>Rs {subtotal.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Tax (8%)</span>
-                  <span>Rs {tax.toFixed(2)}</span>
+                
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-700 font-medium">Discount (Rs)</span>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={discountAmount}
+                    onChange={(e) => setDiscountAmount(e.target.value)}
+                    className="w-28 h-8 text-right text-sm"
+                  />
                 </div>
+
                 <div className="flex justify-between border-t pt-2 text-lg font-bold">
                   <span>Grand Total</span>
                   <span>Rs {total.toFixed(2)}</span>
