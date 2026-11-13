@@ -29,6 +29,7 @@ interface StoreProfile {
 
 export default function CheckoutPage() {
   const router = useRouter();
+  const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [barcodeInput, setBarcodeInput] = useState("");
   const [customName, setCustomName] = useState("");
@@ -63,7 +64,9 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!getToken()) {
       window.location.href = "/login";
+      return;
     }
+    loadProducts();
   }, []);
 
   useEffect(() => {
@@ -82,6 +85,17 @@ export default function CheckoutPage() {
       stopCamera();
     };
   }, []);
+
+  async function loadProducts() {
+    try {
+      const res = await apiFetch<{ data: Product[] }>("/products");
+      if (res && res.data) {
+        setProducts(res.data);
+      }
+    } catch (err) {
+      console.error("Failed to load products for checkout", err);
+    }
+  }
 
   async function startCameraScanner() {
     setError("");
@@ -130,7 +144,7 @@ export default function CheckoutPage() {
         if (barcodes.length > 0 && barcodes[0].rawValue) {
           const scannedCode = barcodes[0].rawValue;
           stopCamera();
-          handleScannedCodeDirectly(scannedCode);
+          processScannedCode(scannedCode);
           return;
         }
       } catch {
@@ -144,28 +158,50 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  function handleScannedCodeDirectly(code: string) {
-    if (!code.trim()) return;
-    setBarcodeInput(code);
-    setCustomName(`Item-${code}`);
-    setError(`Scanned: ${code} — enter Price & Qty below.`);
+  // Core Barcode / SKU Match & Auto-Add Logic
+  function processScannedCode(code: string) {
+    const trimmedCode = code.trim();
+    if (!trimmedCode) return;
+
+    setError("");
+    // Search in loaded inventory products by SKU, barcode, or ID
+    const foundProduct = products.find(
+      (p) =>
+        (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
+        p.id === trimmedCode ||
+        p.name.toLowerCase() === trimmedCode.toLowerCase()
+    );
+
+    if (foundProduct) {
+      // Auto-add to cart with inventory name and price instantly!
+      addToCart(foundProduct, 1);
+      setBarcodeInput("");
+      setCustomName("");
+      setCustomPrice("");
+    } else {
+      // If not in inventory, fallback to manual entry prompt
+      setBarcodeInput(trimmedCode);
+      setCustomName(`Item-${trimmedCode}`);
+      setCustomPrice("");
+      setError(`Barcode (${trimmedCode}) not in inventory — enter Price below and click + Add.`);
+    }
   }
 
   function handleBarcodeSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!barcodeInput.trim()) return;
-    setCustomName(`Item-${barcodeInput.trim()}`);
-    setError("Ready — enter Price & Qty below.");
+    processScannedCode(barcodeInput);
   }
 
   function handleAddCustomItem() {
     if (!customName.trim() || !customPrice) return;
     const qtyToAdd = customQty > 0 ? customQty : 1;
+    const priceNum = parseFloat(customPrice) || 0;
+
     const customProduct = {
       id: `custom-${Date.now()}`,
       name: customName.trim(),
       sku: barcodeInput.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
-      price: customPrice,
+      price: priceNum.toString(),
       stockQty: 9999,
     } as unknown as Product;
 
@@ -391,7 +427,7 @@ export default function CheckoutPage() {
               autoFocus
             />
             <Button type="submit" className="h-12 px-4">
-              Set Code
+              Scan / Find
             </Button>
             {!cameraOpen ? (
               <Button
