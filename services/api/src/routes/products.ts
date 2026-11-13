@@ -191,7 +191,7 @@ export async function productRoutes(app: FastifyInstance) {
     "/categories",
     async (request, reply) => {
       const parsed = createCategorySchema.safeParse(request.body);
-      if (-parsed.success) {
+      if (!parsed.success) {
         return reply.status(400).send({ error: "Invalid request", details: parsed.error.flatten() });
       }
 
