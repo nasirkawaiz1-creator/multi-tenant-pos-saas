@@ -141,9 +141,8 @@ export default function CheckoutPage() {
         const barcodes = await detector.detect(videoRef.current);
         if (barcodes.length > 0 && barcodes[0].rawValue) {
           const scannedCode = barcodes[0].rawValue;
-          setBarcodeInput(scannedCode);
           stopCamera();
-          await lookupAndAddBarcode(scannedCode);
+          handleScannedCodeDirectly(scannedCode);
           return;
         }
       } catch {
@@ -157,30 +156,18 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  async function lookupAndAddBarcode(code: string) {
+  function handleScannedCodeDirectly(code: string) {
     if (!code.trim()) return;
-    try {
-      const res = await apiFetch<{ data: Product[] }>(
-        `/products/search?q=${encodeURIComponent(code.trim())}`
-      );
-      if (res.data && res.data.length > 0) {
-        const firstProduct = res.data[0];
-        if (firstProduct) {
-          addToCart(firstProduct, 1);
-          setBarcodeInput("");
-          setError("");
-        }
-      } else {
-        setError(`Barcode (${code}) not in inventory — enter Name, Qty & Price below.`);
-      }
-    } catch {
-      setError("Failed to lookup barcode");
-    }
+    setBarcodeInput(code);
+    setCustomName(`Item-${code}`);
+    setError(`Scanned: ${code} — enter Price & Qty below.`);
   }
 
-  async function handleBarcodeSubmit(e: React.FormEvent) {
+  function handleBarcodeSubmit(e: React.FormEvent) {
     e.preventDefault();
-    await lookupAndAddBarcode(barcodeInput);
+    if (!barcodeInput.trim()) return;
+    setCustomName(`Item-${barcodeInput.trim()}`);
+    setError("Ready — enter Price & Qty below.");
   }
 
   function handleAddCustomItem() {
@@ -193,7 +180,7 @@ export default function CheckoutPage() {
       price: customPrice,
       stockQty: 9999,
     } as unknown as Product;
-    
+
     addToCart(customProduct, qtyToAdd);
     setCustomName("");
     setCustomPrice("");
@@ -358,7 +345,7 @@ export default function CheckoutPage() {
               autoFocus
             />
             <Button type="submit" className="h-12 px-4">
-              Add Code
+              Set Code
             </Button>
             {!cameraOpen ? (
               <Button
@@ -393,7 +380,7 @@ export default function CheckoutPage() {
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
             <div className="sm:col-span-5">
               <Input
-                placeholder="Item Name..."
+                placeholder="Item Name (Auto/Manual)..."
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
               />
@@ -422,36 +409,7 @@ export default function CheckoutPage() {
             </div>
           </div>
 
-          <Input
-            placeholder="Search saved products by name or SKU..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-12"
-          />
-
-          {results.length > 0 && (
-            <div className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100 shadow-sm">
-              {results.map((product) => (
-                <button
-                  key={product.id}
-                  type="button"
-                  className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-slate-50"
-                  onClick={() => addToCart(product, 1)}
-                >
-                  <div>
-                    <p className="font-medium">{product.name}</p>
-                    <p className="text-xs text-slate-500">Code: {product.sku}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-semibold">Rs {product.price}</p>
-                    <p className="text-xs text-slate-500">Stock: {product.stockQty}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-
-          {error && <p className="text-sm text-red-600 font-medium bg-red-50 p-2 rounded">{error}</p>}
+          {error && <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">{error}</p>}
 
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-sm text-left">
