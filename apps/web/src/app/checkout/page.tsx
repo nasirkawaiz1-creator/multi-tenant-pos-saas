@@ -39,6 +39,7 @@ export default function CheckoutPage() {
   const [error, setError] = useState("");
 
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
@@ -91,6 +92,45 @@ export default function CheckoutPage() {
     } catch (err) {
       console.error("Failed to load products for checkout", err);
     }
+  }
+
+  // 🎤 Voice Recognition / Mic Feature for Non-Literate Vendors
+  function startVoiceSearch() {
+    // @ts-expect-error window.webkitSpeechRecognition support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("Voice search is not supported on this browser. Please use Chrome.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "ur-PK"; // Urdu / English support
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setError("🎤 Listening... Speak product name (e.g. Lipstick, Foundation)");
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      const spokenText = event.results[0][0].transcript;
+      setBarcodeInput(spokenText);
+      setIsListening(false);
+      processScannedCode(spokenText);
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setError("Voice recognition error. Please try again.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.start();
   }
 
   async function startCameraScanner() {
@@ -154,7 +194,7 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // CORE LOGIC: Instant Auto-Add to Cart & Save to Server Inventory upon Scan!
+  // CORE LOGIC: Instant Auto-Add to Cart & Save to Server Inventory with Name & Price!
   async function processScannedCode(code: string) {
     const trimmedCode = code.trim();
     if (!trimmedCode) return;
@@ -162,7 +202,7 @@ export default function CheckoutPage() {
     setError("");
     setBarcodeInput("");
 
-    // 1. Check if product already exists in inventory
+    // 1. Check if product already exists in inventory (by SKU, ID, or Name)
     let targetProduct = products.find(
       (p) =>
         (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
@@ -170,10 +210,9 @@ export default function CheckoutPage() {
         p.name.toLowerCase() === trimmedCode.toLowerCase()
     );
 
-    // 2. If not in inventory, automatically create and save it instantly so it appears in list!
+    // 2. If not in inventory, automatically create and save it instantly with proper Item Name!
     if (!targetProduct) {
-      // Automatic smart name assignment (e.g. Pantene Shampoo for this specific barcode, or generic Item-code)
-      const generatedName = trimmedCode === "8700216649933" ? "Pantene Shampoo 390ml" : `Item-${trimmedCode}`;
+      const generatedName = trimmedCode === "8700216649933" ? "Pantene Shampoo 390ml" : `${trimmedCode}`;
       const defaultPrice = "350"; // Default base price
 
       try {
@@ -205,7 +244,7 @@ export default function CheckoutPage() {
 
     if (targetProduct) {
       addToCart(targetProduct, 1);
-      setError(`⚡ Auto-added to bill & saved to inventory: ${targetProduct.name}`);
+      setError(`⚡ Added to Bill: ${targetProduct.name} (Rs ${targetProduct.price})`);
     }
   }
 
@@ -423,14 +462,14 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Instant Barcode Scan & Auto-Add to List ⚡" />
+      <PageHeader title="Checkout Terminal" description="Instant Barcode Scan, Voice Search & Auto-Add ⚡" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
           <form onSubmit={handleBarcodeSubmit} className="flex flex-wrap gap-2">
             <Input
               ref={barcodeInputRef}
-              placeholder="Scan Barcode / QR Code here..."
+              placeholder="Scan Barcode / QR Code or Speak Item Name..."
               value={barcodeInput}
               onChange={(e) => setBarcodeInput(e.target.value)}
               className="h-12 text-base flex-1 min-w-[200px]"
@@ -439,6 +478,18 @@ export default function CheckoutPage() {
             <Button type="submit" className="h-12 px-4 bg-green-600 hover:bg-green-700 text-white">
               ⚡ Scan & Add
             </Button>
+            
+            {/* 🎤 Voice Mic Button */}
+            <Button
+              type="button"
+              variant="outline"
+              className={`h-12 px-4 border-amber-600 text-amber-700 ${isListening ? 'bg-amber-100 animate-pulse' : ''}`}
+              onClick={startVoiceSearch}
+              title="Click and Speak Product Name"
+            >
+              🎤 {isListening ? "Listening..." : "Voice Search"}
+            </Button>
+
             {!cameraOpen ? (
               <Button
                 type="button"
@@ -471,7 +522,7 @@ export default function CheckoutPage() {
 
           {error && <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">{error}</p>}
 
-          {/* Cart Table with Direct Price Editing */}
+          {/* Cart Table with Direct Item Name Display & Price Editing */}
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-sm text-left">
               <thead className="bg-blue-600 text-white text-xs uppercase">
@@ -487,7 +538,7 @@ export default function CheckoutPage() {
                 {cart.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
-                      Scan any barcode to add items instantly...
+                      Scan any barcode or use Voice Search to add items instantly...
                     </td>
                   </tr>
                 ) : (
@@ -496,7 +547,7 @@ export default function CheckoutPage() {
                     return (
                       <tr key={item.product.id}>
                         <td className="px-3 py-2 text-xs text-slate-500">{item.product.sku}</td>
-                        <td className="px-3 py-2 font-medium">{item.product.name}</td>
+                        <td className="px-3 py-2 font-medium text-slate-900">{item.product.name}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-center gap-1">
                             <Button
