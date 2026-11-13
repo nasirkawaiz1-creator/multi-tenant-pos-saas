@@ -1,3 +1,4 @@
+
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { DbTransaction } from "@pos/database";
 import { withTenantContext } from "@pos/database";
