@@ -41,6 +41,7 @@ export default function CheckoutPage() {
   const [receipt, setReceipt] = useState<Order | null>(null);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
+  const [isListening, setIsListening] = useState(false);
 
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -158,13 +159,53 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // Core Barcode / SKU Match & Auto-Add Logic
-  function processScannedCode(code: string) {
+  // 1. Voice Input Feature (بول کر نام لکھنے کا فیچر)
+  function startVoiceInput() {
+    // @ts-expect-error webkitSpeechRecognition for browser support
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError("Voice recognition is not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "ur-PK"; // Urdu & English mixed voice support
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setError("Listening... Speak item name.");
+    };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (event: any) => {
+      const spokenText = event.results[0][0].transcript;
+      setCustomName(spokenText);
+      setIsListening(false);
+      setError(`Heard: "${spokenText}" — now enter price and add.`);
+    };
+
+    recognition.onerror = () => {
+      setIsListening(false);
+      setError("Voice recognition error. Please try again.");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.start();
+  }
+
+  // 2. Global Barcode Lookup (انٹرنیشنل کیو آر/بارکوڈ آٹو-فیچ) + Local Check
+  async function processScannedCode(code: string) {
     const trimmedCode = code.trim();
     if (!trimmedCode) return;
 
     setError("");
-    // Search in loaded inventory products by SKU, barcode, or ID
+
+    // Step A: Check local inventory first
     const foundProduct = products.find(
       (p) =>
         (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
@@ -173,18 +214,46 @@ export default function CheckoutPage() {
     );
 
     if (foundProduct) {
-      // Auto-add to cart with inventory name and price instantly!
       addToCart(foundProduct, 1);
       setBarcodeInput("");
       setCustomName("");
       setCustomPrice("");
-    } else {
-      // If not in inventory, fallback to manual entry prompt
-      setBarcodeInput(trimmedCode);
-      setCustomName(`Item-${trimmedCode}`);
-      setCustomPrice("");
-      setError(`Barcode (${trimmedCode}) not in inventory — enter Price below and click + Add.`);
+      return;
     }
+
+    // Step B: If not local, fetch from Global Open Food Facts / Barcode API
+    setError(`Fetching global data for barcode: ${trimmedCode}...`);
+    try {
+      const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${trimmedCode}.json`);
+      const data = await response.json();
+
+      if (data.status === 1 && data.product) {
+        const productName = data.product.product_name || data.product.brands || `Item-${trimmedCode}`;
+        
+        const apiProduct = {
+          id: `global-${trimmedCode}`,
+          name: productName,
+          sku: trimmedCode,
+          price: "150", // Default estimated price or editable
+          stockQty: 999,
+        } as unknown as Product;
+
+        addToCart(apiProduct, 1);
+        setBarcodeInput("");
+        setCustomName("");
+        setCustomPrice("");
+        setError(`Auto-fetched: ${productName}`);
+        return;
+      }
+    } catch (err) {
+      console.error("Global API lookup failed", err);
+    }
+
+    // Step C: Fallback to manual/voice prompt if global lookup also misses
+    setBarcodeInput(trimmedCode);
+    setCustomName(`Item-${trimmedCode}`);
+    setCustomPrice("");
+    setError(`Barcode (${trimmedCode}) not found globally — use Mic 🎤 to speak name or enter Price.`);
   }
 
   function handleBarcodeSubmit(e: React.FormEvent) {
@@ -269,7 +338,7 @@ export default function CheckoutPage() {
         method: "POST",
         body: JSON.stringify({
           items: cart.map((item) => ({
-            productId: item.product.id.startsWith("custom-") ? undefined : item.product.id,
+            productId: item.product.id.startsWith("custom-") || item.product.id.startsWith("global-") ? undefined : item.product.id,
             quantity: item.quantity,
           })),
         }),
@@ -413,7 +482,7 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Scan QR/Barcode or add wholesale items" />
+      <PageHeader title="Checkout Terminal" description="Scan QR/Barcode or use Voice/Global API lookup" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -436,7 +505,7 @@ export default function CheckoutPage() {
                 className="h-12 px-4 border-blue-600 text-blue-600"
                 onClick={startCameraScanner}
               >
-                📷 Camera Scan (QR/Barcode)
+                📷 Camera Scan
               </Button>
             ) : (
               <Button
@@ -459,13 +528,23 @@ export default function CheckoutPage() {
             </div>
           )}
 
+          {/* Manual / Voice Input Panel */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
-            <div className="sm:col-span-5">
+            <div className="sm:col-span-4 flex gap-1">
               <Input
-                placeholder="Item Name (Auto/Manual)..."
+                placeholder="Item Name..."
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
               />
+              <Button
+                type="button"
+                variant="outline"
+                className={`px-3 ${isListening ? "bg-red-100 text-red-600 border-red-500 animate-pulse" : "border-purple-600 text-purple-700"}`}
+                onClick={startVoiceInput}
+                title="Speak item name in Urdu/English"
+              >
+                🎤
+              </Button>
             </div>
             <div className="sm:col-span-2">
               <Input
@@ -476,7 +555,7 @@ export default function CheckoutPage() {
                 onChange={(e) => setCustomQty(parseInt(e.target.value) || 1)}
               />
             </div>
-            <div className="sm:col-span-3">
+            <div className="sm:col-span-4">
               <Input
                 placeholder="Price (Rs)"
                 type="number"
