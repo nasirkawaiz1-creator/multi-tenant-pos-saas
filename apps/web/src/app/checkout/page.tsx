@@ -24,6 +24,7 @@ interface CartItem {
 interface StoreProfile {
   name: string;
   details: string;
+  phone: string;
 }
 
 const TAX_RATE = 0.08;
@@ -35,7 +36,7 @@ export default function CheckoutPage() {
   const [customName, setCustomName] = useState("");
   const [customPrice, setCustomPrice] = useState("");
   const [customQty, setCustomQty] = useState<number>(1);
-  const [results, setResults] = useState<Product[]>([]);
+  const [customerPhone, setCustomerPhone] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [receipt, setReceipt] = useState<Order | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -48,13 +49,15 @@ export default function CheckoutPage() {
 
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
     name: "Imdad Cosmetics",
-    details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi | Ph: 03451523394",
+    details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi",
+    phone: "03451523394",
   });
 
   const storeProfiles: Record<string, StoreProfile> = {
     "imdad-cosmetics": {
       name: "Imdad Cosmetics",
-      details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi | Ph: 03451523394",
+      details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi",
+      phone: "03451523394",
     },
   };
 
@@ -69,7 +72,8 @@ export default function CheckoutPage() {
     setStoreInfo(
       storeProfiles[currentTenant as keyof typeof storeProfiles] || {
         name: "Imdad Cosmetics",
-        details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi | Ph: 03451523394",
+        details: "Shop # B1-A, Kamil Plaza, Basement Bara Bazar, Rawalpindi",
+        phone: "03451523394",
       }
     );
   }, []);
@@ -79,21 +83,6 @@ export default function CheckoutPage() {
       stopCamera();
     };
   }, []);
-
-  useEffect(() => {
-    if (!search.trim()) {
-      setResults([]);
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      apiFetch<{ data: Product[] }>(`/products/search?q=${encodeURIComponent(search)}`)
-        .then((res) => setResults(res.data))
-        .catch(() => setResults([]));
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [search]);
 
   async function startCameraScanner() {
     setError("");
@@ -202,7 +191,6 @@ export default function CheckoutPage() {
       return [...prev, { product, quantity: qtyToAdd }];
     });
     setSearch("");
-    setResults([]);
   }
 
   function updateQty(productId: string, delta: number) {
@@ -260,10 +248,44 @@ export default function CheckoutPage() {
     }
   }
 
+  function sendWhatsAppReceipt(targetPhone?: string) {
+    if (!receipt) return;
+    
+    let itemsText = "";
+    receipt.items?.forEach((item, index) => {
+      itemsText += `${index + 1}. ${item.productName} x ${item.quantity} - Rs ${(parseFloat(item.unitPrice) * item.quantity).toFixed(2)}\n`;
+    });
+
+    const message = 
+      `*${storeInfo.name}*\n` +
+      `${storeInfo.details}\n` +
+      `Ph: ${storeInfo.phone}\n` +
+      `--------------------------------\n` +
+      `*Order Receipt #${receipt.id.slice(0, 8)}*\n\n` +
+      `${itemsText}\n` +
+      `--------------------------------\n` +
+      `Subtotal: Rs ${receipt.subtotal}\n` +
+      `Tax (8%): Rs ${receipt.tax}\n` +
+      `*Grand Total: Rs ${receipt.total}*\n` +
+      `--------------------------------\n` +
+      `Thank you for shopping with us!`;
+
+    const encodedMessage = encodeURIComponent(message);
+    let url = `https://wa.me/?text=${encodedMessage}`;
+    
+    if (targetPhone && targetPhone.trim().length > 5) {
+      // Clean phone number (remove dashes, spaces, ensure country code if needed)
+      const cleanPhone = targetPhone.replace(/[^0-9]/g, "");
+      url = `https://wa.me/${cleanPhone}?text=${encodedMessage}`;
+    }
+
+    window.open(url, "_blank");
+  }
+
   if (receipt) {
     return (
       <AppShell title="Checkout">
-        <div className="mx-auto max-w-md">
+        <div className="mx-auto max-w-md space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>Receipt</CardTitle>
@@ -273,6 +295,7 @@ export default function CheckoutPage() {
               <div className="border-b border-slate-200 pb-3 text-center">
                 <h2 className="font-bold text-lg">{storeInfo.name}</h2>
                 <p className="text-xs text-slate-600">{storeInfo.details}</p>
+                <p className="text-xs text-slate-600">Ph: {storeInfo.phone}</p>
               </div>
               <p className="text-sm text-slate-500">Order #{receipt.id.slice(0, 8)}</p>
               <div className="divide-y divide-slate-100">
@@ -299,7 +322,29 @@ export default function CheckoutPage() {
                   <span>Rs {receipt.total}</span>
                 </div>
               </div>
-              <Button className="w-full" onClick={() => setReceipt(null)}>
+
+              <div className="space-y-2 pt-2">
+                <Input
+                  placeholder="Customer WhatsApp Number (e.g. 923001234567)"
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                />
+                <Button
+                  className="w-full bg-green-600 hover:bg-green-700 text-white"
+                  onClick={() => sendWhatsAppReceipt(customerPhone)}
+                >
+                  💬 Send Receipt to Customer WhatsApp
+                </Button>
+                <Button
+                  variant="outline"
+                  className="w-full border-green-600 text-green-700 hover:bg-green-50"
+                  onClick={() => sendWhatsAppReceipt(storeInfo.phone)}
+                >
+                  📱 Send Copy to Store Owner
+                </Button>
+              </div>
+
+              <Button className="w-full mt-2" onClick={() => setReceipt(null)}>
                 New Sale
               </Button>
             </CardContent>
@@ -328,7 +373,7 @@ export default function CheckoutPage() {
     >
       <div className="mb-4 border-b border-slate-200 pb-3">
         <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
-        <p className="text-sm text-slate-700 font-medium">{storeInfo.details}</p>
+        <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
       <PageHeader title="Checkout Terminal" description="Scan QR/Barcode or add wholesale items" />
