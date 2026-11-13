@@ -164,9 +164,12 @@ export default function CheckoutPage() {
         `/products/search?q=${encodeURIComponent(code.trim())}`
       );
       if (res.data && res.data.length > 0) {
-        addToCart(res.data[0], 1);
-        setBarcodeInput("");
-        setError("");
+        const firstProduct = res.data[0];
+        if (firstProduct) {
+          addToCart(firstProduct, 1);
+          setBarcodeInput("");
+          setError("");
+        }
       } else {
         setError(`Barcode (${code}) not in inventory — enter Name, Qty & Price below.`);
       }
