@@ -186,13 +186,14 @@ export default function CheckoutPage() {
   function handleAddCustomItem() {
     if (!customName.trim() || !customPrice) return;
     const qtyToAdd = customQty > 0 ? customQty : 1;
-    const customProduct: Product = {
+    const customProduct = {
       id: `custom-${Date.now()}`,
       name: customName.trim(),
       sku: barcodeInput.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
       price: customPrice,
       stockQty: 9999,
-    };
+    } as unknown as Product;
+    
     addToCart(customProduct, qtyToAdd);
     setCustomName("");
     setCustomPrice("");
