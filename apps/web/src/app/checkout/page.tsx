@@ -94,7 +94,7 @@ export default function CheckoutPage() {
     }
   }
 
-  // 🎤 Voice Recognition / Mic Feature for Non-Literate Vendors
+  // 🎤 Voice Search / Mic Feature (Roman English Speech Support)
   function startVoiceSearch() {
     // @ts-expect-error window.webkitSpeechRecognition support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -104,13 +104,13 @@ export default function CheckoutPage() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "ur-PK"; // Urdu / English support
+    recognition.lang = "en-US";
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("🎤 Listening... Speak product name (e.g. Lipstick, Foundation)");
+      setError("🎤 Listening... Speak item name (e.g. Head and Shoulders Shampoo, Lipstick)");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,7 +194,7 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // CORE LOGIC: Instant Auto-Add to Cart & Save to Server Inventory with Name & Price!
+  // CORE LOGIC: Scan Barcode -> Auto fetch/create item name and instantly save to Inventory Database
   async function processScannedCode(code: string) {
     const trimmedCode = code.trim();
     if (!trimmedCode) return;
@@ -202,7 +202,7 @@ export default function CheckoutPage() {
     setError("");
     setBarcodeInput("");
 
-    // 1. Check if product already exists in inventory (by SKU, ID, or Name)
+    // 1. Check if product already exists in inventory
     let targetProduct = products.find(
       (p) =>
         (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
@@ -210,10 +210,10 @@ export default function CheckoutPage() {
         p.name.toLowerCase() === trimmedCode.toLowerCase()
     );
 
-    // 2. If not in inventory, automatically create and save it instantly with proper Item Name!
+    // 2. If not found in inventory, auto-generate and save it permanently to inventory database
     if (!targetProduct) {
-      const generatedName = trimmedCode === "8700216649933" ? "Pantene Shampoo 390ml" : `${trimmedCode}`;
-      const defaultPrice = "350"; // Default base price
+      const generatedName = trimmedCode.length > 12 ? `Cosmetic Item (${trimmedCode.slice(-6)})` : `${trimmedCode}`;
+      const defaultPrice = "0";
 
       try {
         const savedProduct = await apiFetch<Product>("/products", {
@@ -231,7 +231,6 @@ export default function CheckoutPage() {
           setProducts((prev) => [...prev, savedProduct]);
         }
       } catch {
-        // Fallback temporary product if offline
         targetProduct = {
           id: `custom-${Date.now()}`,
           name: generatedName,
@@ -244,7 +243,7 @@ export default function CheckoutPage() {
 
     if (targetProduct) {
       addToCart(targetProduct, 1);
-      setError(`⚡ Added to Bill: ${targetProduct.name} (Rs ${targetProduct.price})`);
+      setError(`⚡ Added & Saved to Inventory: ${targetProduct.name}`);
     }
   }
 
@@ -462,7 +461,7 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Instant Barcode Scan, Voice Search & Auto-Add ⚡" />
+      <PageHeader title="Checkout Terminal" description="Instant Barcode Scan, Voice Search & Auto-Add to Inventory ⚡" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -479,7 +478,7 @@ export default function CheckoutPage() {
               ⚡ Scan & Add
             </Button>
             
-            {/* 🎤 Voice Mic Button */}
+            {/* 🎤 Voice Search Mic Button */}
             <Button
               type="button"
               variant="outline"
@@ -522,7 +521,7 @@ export default function CheckoutPage() {
 
           {error && <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">{error}</p>}
 
-          {/* Cart Table with Direct Item Name Display & Price Editing */}
+          {/* Cart Table with Barcode and Auto Item Name */}
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-sm text-left">
               <thead className="bg-blue-600 text-white text-xs uppercase">
@@ -546,7 +545,7 @@ export default function CheckoutPage() {
                     const rowTotal = ((parseFloat(item.product.price) || 0) * item.quantity).toFixed(2);
                     return (
                       <tr key={item.product.id}>
-                        <td className="px-3 py-2 text-xs text-slate-500">{item.product.sku}</td>
+                        <td className="px-3 py-2 text-xs font-mono text-slate-600">{item.product.sku}</td>
                         <td className="px-3 py-2 font-medium text-slate-900">{item.product.name}</td>
                         <td className="px-3 py-2">
                           <div className="flex items-center justify-center gap-1">
