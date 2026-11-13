@@ -159,7 +159,7 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // 1. Voice Input Feature (بول کر نام لکھنے کا فیچر)
+  // Voice Input Fixed to Roman English / Urdu (سپیلنگ رومن میں آئیں گے)
   function startVoiceInput() {
     // @ts-expect-error webkitSpeechRecognition for browser support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -169,13 +169,13 @@ export default function CheckoutPage() {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = "ur-PK"; // Urdu & English mixed voice support
+    recognition.lang = "en-US"; // Roman / English speech recognition for correct spelling
     recognition.interimResults = false;
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("Listening... Speak item name.");
+      setError("Listening... Speak item name (e.g. Pantene Shampoo).");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -198,14 +198,13 @@ export default function CheckoutPage() {
     recognition.start();
   }
 
-  // 2. Global Barcode Lookup (انٹرنیشنل کیو آر/بارکوڈ آٹو-فیچ) + Local Check
-  async function processScannedCode(code: string) {
+  function processScannedCode(code: string) {
     const trimmedCode = code.trim();
     if (!trimmedCode) return;
 
     setError("");
 
-    // Step A: Check local inventory first
+    // 1. Check local inventory first
     const foundProduct = products.find(
       (p) =>
         (p.sku && p.sku.toLowerCase() === trimmedCode.toLowerCase()) ||
@@ -221,39 +220,11 @@ export default function CheckoutPage() {
       return;
     }
 
-    // Step B: If not local, fetch from Global Open Food Facts / Barcode API
-    setError(`Fetching global data for barcode: ${trimmedCode}...`);
-    try {
-      const response = await fetch(`https://world.openfoodfacts.org/api/v0/product/${trimmedCode}.json`);
-      const data = await response.json();
-
-      if (data.status === 1 && data.product) {
-        const productName = data.product.product_name || data.product.brands || `Item-${trimmedCode}`;
-        
-        const apiProduct = {
-          id: `global-${trimmedCode}`,
-          name: productName,
-          sku: trimmedCode,
-          price: "150", // Default estimated price or editable
-          stockQty: 999,
-        } as unknown as Product;
-
-        addToCart(apiProduct, 1);
-        setBarcodeInput("");
-        setCustomName("");
-        setCustomPrice("");
-        setError(`Auto-fetched: ${productName}`);
-        return;
-      }
-    } catch (err) {
-      console.error("Global API lookup failed", err);
-    }
-
-    // Step C: Fallback to manual/voice prompt if global lookup also misses
+    // 2. Fallback for new barcode: Prompt for voice/manual name instantly
     setBarcodeInput(trimmedCode);
     setCustomName(`Item-${trimmedCode}`);
     setCustomPrice("");
-    setError(`Barcode (${trimmedCode}) not found globally — use Mic 🎤 to speak name or enter Price.`);
+    setError(`New Barcode (${trimmedCode}) — Click 🎤 Mic to speak name or type Price.`);
   }
 
   function handleBarcodeSubmit(e: React.FormEvent) {
@@ -338,7 +309,7 @@ export default function CheckoutPage() {
         method: "POST",
         body: JSON.stringify({
           items: cart.map((item) => ({
-            productId: item.product.id.startsWith("custom-") || item.product.id.startsWith("global-") ? undefined : item.product.id,
+            productId: item.product.id.startsWith("custom-") ? undefined : item.product.id,
             quantity: item.quantity,
           })),
         }),
@@ -482,7 +453,7 @@ export default function CheckoutPage() {
         <p className="text-sm text-slate-700 font-medium">{storeInfo.details} | Ph: {storeInfo.phone}</p>
       </div>
 
-      <PageHeader title="Checkout Terminal" description="Scan QR/Barcode or use Voice/Global API lookup" />
+      <PageHeader title="Checkout Terminal" description="Scan Barcode or use Voice Input 🎤" />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
@@ -528,11 +499,11 @@ export default function CheckoutPage() {
             </div>
           )}
 
-          {/* Manual / Voice Input Panel */}
+          {/* Voice Input Panel */}
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 bg-slate-50 p-3 rounded-lg border border-slate-200">
             <div className="sm:col-span-4 flex gap-1">
               <Input
-                placeholder="Item Name..."
+                placeholder="Item Name (Roman/English)..."
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
               />
@@ -541,7 +512,7 @@ export default function CheckoutPage() {
                 variant="outline"
                 className={`px-3 ${isListening ? "bg-red-100 text-red-600 border-red-500 animate-pulse" : "border-purple-600 text-purple-700"}`}
                 onClick={startVoiceInput}
-                title="Speak item name in Urdu/English"
+                title="Speak item name in English/Roman"
               >
                 🎤
               </Button>
