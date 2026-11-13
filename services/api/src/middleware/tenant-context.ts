@@ -9,10 +9,8 @@ export async function runWithTenant<T>(
   reply: FastifyReply,
   fn: (tx: TenantDb) => Promise<T>,
 ): Promise<T | undefined> {
-  if (!request.user) {
-    reply.status(401).send({ error: "Unauthorized" });
-    return undefined;
-  }
+  // Use user's tenantId if available, otherwise fallback to 'default-tenant' for zero-login POS use
+  const tenantId = request.user?.tenantId ?? "default-tenant";
 
-  return withTenantContext(request.user.tenantId, fn);
+  return withTenantContext(tenantId, fn);
 }
