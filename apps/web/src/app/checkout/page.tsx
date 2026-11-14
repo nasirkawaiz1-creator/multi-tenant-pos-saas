@@ -97,7 +97,7 @@ export default function CheckoutPage() {
     }
   }
 
-  // 🎤 Voice Search / Mic Feature for Item Name Box
+  // 🎤 Voice Search / Mic Feature for Item Name Box (Roman English)
   function startVoiceSearch() {
     // @ts-expect-error window.webkitSpeechRecognition support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -113,7 +113,7 @@ export default function CheckoutPage() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("🎤 Listening... Speak item name (e.g. Cream, Soap)");
+      setError("🎤 Listening... Speak item name (e.g. Cream, Soap, Shampoo)");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -197,6 +197,7 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
+  // CORE LOGIC: When Barcode is scanned, auto-fill Barcode AND Auto-fill Item Name from DB
   function handleBarcodeScanned(code: string) {
     const trimmed = code.trim();
     if (!trimmed) return;
@@ -222,6 +223,7 @@ export default function CheckoutPage() {
     handleBarcodeScanned(barcodeInput);
   }
 
+  // + Add & Save Button Logic (Saves permanently to Inventory DB & Adds to Cart)
   async function handleAddAndSave(e: React.FormEvent) {
     e.preventDefault();
     const sku = barcodeInput.trim() || `SKU-${Date.now().toString().slice(-6)}`;
@@ -391,7 +393,6 @@ export default function CheckoutPage() {
     window.open(url, "_blank");
   }
 
-  // اگر بل مکمل ہو جائے تو رسیپٹ کا سکرین شو ہوگا جس پر کسٹمر اور اونر دونوں کے واٹس ایپ بٹن ہوں گے
   if (receipt) {
     return (
       <AppShell title="Checkout">
@@ -691,7 +692,7 @@ export default function CheckoutPage() {
 
               <Button
                 size="lg"
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                className="w-full"
                 onClick={completeSale}
                 disabled={processing || cart.length === 0}
               >
