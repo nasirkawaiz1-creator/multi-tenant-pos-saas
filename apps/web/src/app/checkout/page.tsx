@@ -113,7 +113,7 @@ export default function CheckoutPage() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setError("🎤 Listening... Speak item name (e.g. Pantene Shampoo, Lipstick)");
+      setError("🎤 Listening... Speak item name (e.g. Cream, Soap)");
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -197,13 +197,11 @@ export default function CheckoutPage() {
     requestAnimationFrame(scanFrame);
   }
 
-  // CORE LOGIC: When Barcode is scanned, auto-fill Barcode AND Auto-fill Item Name from DB!
   function handleBarcodeScanned(code: string) {
     const trimmed = code.trim();
     if (!trimmed) return;
     setBarcodeInput(trimmed);
 
-    // Search in loaded products list
     const found = products.find(
       (p) => (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase()) || p.id === trimmed
     );
@@ -213,7 +211,6 @@ export default function CheckoutPage() {
       setPriceInput(found.price || "");
       setError(`⚡ Auto-matched: ${found.name}`);
     } else {
-      // If not in database, auto-generate a clean item name based on code
       setItemNameInput(`Item-${trimmed}`);
       setPriceInput("");
       setError(`⚡ New Barcode. Name auto-filled, adjust price if needed.`);
@@ -225,7 +222,6 @@ export default function CheckoutPage() {
     handleBarcodeScanned(barcodeInput);
   }
 
-  // + Add & Save Button Logic (Saves permanently to Inventory DB & Adds to Cart)
   async function handleAddAndSave(e: React.FormEvent) {
     e.preventDefault();
     const sku = barcodeInput.trim() || `SKU-${Date.now().toString().slice(-6)}`;
@@ -272,7 +268,6 @@ export default function CheckoutPage() {
       addToCart(targetProduct, qty);
       setError(`Item successfully saved to inventory & added to cart!`);
       
-      // Clear inputs for next scan
       setBarcodeInput("");
       setItemNameInput("");
       setQtyInput("1");
@@ -396,6 +391,7 @@ export default function CheckoutPage() {
     window.open(url, "_blank");
   }
 
+  // اگر بل مکمل ہو جائے تو رسیپٹ کا سکرین شو ہوگا جس پر کسٹمر اور اونر دونوں کے واٹس ایپ بٹن ہوں گے
   if (receipt) {
     return (
       <AppShell title="Checkout">
@@ -439,29 +435,30 @@ export default function CheckoutPage() {
                 </div>
               </div>
 
-              <div className="space-y-2 pt-2">
+              {/* 💬 Customer & 📱 Store Owner WhatsApp Buttons */}
+              <div className="space-y-2 pt-2 border-t">
                 <Input
                   placeholder="Customer WhatsApp Number (e.g. 923001234567)"
                   value={customerPhone}
                   onChange={(e) => setCustomerPhone(e.target.value)}
                 />
                 <Button
-                  className="w-full bg-green-600 hover:bg-green-700 text-white"
+                  className="w-full bg-green-600 hover:bg-green-700 text-white font-medium"
                   onClick={() => sendWhatsAppReceipt(customerPhone)}
                 >
                   💬 Send Receipt to Customer WhatsApp
                 </Button>
                 <Button
                   variant="outline"
-                  className="w-full border-green-600 text-green-700 hover:bg-green-50"
+                  className="w-full border-green-600 text-green-700 hover:bg-green-50 font-medium"
                   onClick={() => sendWhatsAppReceipt(storeInfo.phone)}
                 >
-                  📱 Send Copy to Store Owner
+                  📱 Send Copy to Store Owner ({storeInfo.phone})
                 </Button>
               </div>
 
-              <Button className="w-full mt-2" onClick={() => setReceipt(null)}>
-                New Sale
+              <Button className="w-full mt-3 bg-slate-900 hover:bg-slate-800 text-white" onClick={() => setReceipt(null)}>
+                New Sale / Done
               </Button>
             </CardContent>
           </Card>
@@ -497,7 +494,6 @@ export default function CheckoutPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 space-y-4">
           
-          {/* Top Barcode & Scan/Find Form */}
           <div className="flex flex-wrap gap-2">
             <Input
               ref={barcodeInputRef}
@@ -544,7 +540,6 @@ export default function CheckoutPage() {
             </div>
           )}
 
-          {/* Item Name (Auto-Filled on Scan OR Voice Spoken), Qty, Price, + Add & Save */}
           <form onSubmit={handleAddAndSave} className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50">
             <div className="relative flex items-center">
               <Input
@@ -593,7 +588,6 @@ export default function CheckoutPage() {
 
           {error && <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">{error}</p>}
 
-          {/* Cart Table */}
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
             <table className="w-full text-sm text-left">
               <thead className="bg-blue-600 text-white text-xs uppercase">
@@ -697,7 +691,7 @@ export default function CheckoutPage() {
 
               <Button
                 size="lg"
-                className="w-full"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 onClick={completeSale}
                 disabled={processing || cart.length === 0}
               >
