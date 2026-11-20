@@ -175,6 +175,7 @@ export default function CheckoutPage() {
           const formData = new FormData();
           formData.append("image", blob, "product-scan.jpg");
           formData.append("scan_type", "product");
+          formData.append("token", getToken() ?? "");
 
           const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
             method: "POST",
