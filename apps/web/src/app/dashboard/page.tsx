@@ -54,56 +54,73 @@ function VisitingCard() {
   );
 }
 
-// Lets the owner replace the temporary password they were given at registration.
-function ChangePassword() {
-  const [current, setCurrent] = useState("");
-  const [next, setNext] = useState("");
-  const [message, setMessage] = useState("");
-  const [saving, setSaving] = useState(false);
+// Railway-style 1-month subscription countdown & limit card
+function SubscriptionCard({ tenant }: { tenant: Tenant | null }) {
+  const [now, setNow] = useState(() => new Date());
 
-  async function submit() {
-    setSaving(true);
-    setMessage("");
-    try {
-      await apiFetch("/auth/change-password", {
-        method: "POST",
-        body: JSON.stringify({ currentPassword: current, newPassword: next }),
-      });
-      setCurrent("");
-      setNext("");
-      setMessage("✔ Password changed.");
-    } catch (err) {
-      setMessage(`❌ ${err instanceof Error ? err.message : "Could not change password"}`);
-    } finally {
-      setSaving(false);
-    }
-  }
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  if (!tenant) return null;
+
+  const rawCreated =
+    (tenant as Tenant & { createdAt?: string; created_at?: string }).createdAt ??
+    (tenant as Tenant & { createdAt?: string; created_at?: string }).created_at;
+
+  if (!rawCreated) return null;
+
+  const created = new Date(rawCreated);
+  const expiresAt = new Date(created);
+  expiresAt.setMonth(expiresAt.getMonth() + 1);
+
+  const diffMs = expiresAt.getTime() - now.getTime();
+  const daysLeft = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
+  const isExpired = diffMs <= 0;
+
+  const pktDateTime = new Intl.DateTimeFormat("en-PK", {
+    timeZone: "Asia/Karachi",
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(now);
+
+  const expiryDateText = new Intl.DateTimeFormat("en-PK", {
+    timeZone: "Asia/Karachi",
+    dateStyle: "medium",
+  }).format(expiresAt);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Change password</CardTitle>
-        <CardDescription>Replace the temporary password with your own (min. 8 characters).</CardDescription>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle>Subscription Limit</CardTitle>
+          <span
+            className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+              isExpired
+                ? "bg-red-100 text-red-700"
+                : daysLeft <= 5
+                ? "bg-amber-100 text-amber-800"
+                : "bg-emerald-100 text-emerald-700"
+            }`}
+          >
+            {isExpired ? "Expired" : `${daysLeft} ${daysLeft === 1 ? "day" : "days"} left`}
+          </span>
+        </div>
+        <CardDescription>1-month validity from store activation date.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <input
-          type="password"
-          placeholder="Current password"
-          value={current}
-          onChange={(e) => setCurrent(e.target.value)}
-          className="w-full rounded-md border px-3 py-2 text-sm"
-        />
-        <input
-          type="password"
-          placeholder="New password"
-          value={next}
-          onChange={(e) => setNext(e.target.value)}
-          className="w-full rounded-md border px-3 py-2 text-sm"
-        />
-        <Button onClick={submit} disabled={saving || !current || next.length < 8}>
-          {saving ? "Saving..." : "Change password"}
-        </Button>
-        {message && <p className="text-sm text-slate-700">{message}</p>}
+      <CardContent className="space-y-1.5 text-sm text-slate-700">
+        <p className="text-lg font-semibold text-slate-900">
+          {isExpired
+            ? "0 days left — Limit expired"
+            : `${daysLeft} ${daysLeft === 1 ? "day" : "days"} left in your limit`}
+        </p>
+        <p>
+          <span className="font-medium text-slate-900">Expiry Date:</span> {expiryDateText}
+        </p>
+        <p>
+          <span className="font-medium text-slate-900">Current Date &amp; Time (PKT):</span> {pktDateTime}
+        </p>
       </CardContent>
     </Card>
   );
@@ -188,8 +205,9 @@ export default function DashboardPage() {
             </CardContent>
           </Card>
         </a>
+
+        <SubscriptionCard tenant={tenant} />
         <VisitingCard />
-        <ChangePassword />
       </div>
     </AppShell>
   );
