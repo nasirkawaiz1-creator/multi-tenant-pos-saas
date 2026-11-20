@@ -16,6 +16,9 @@ import {
   PageHeader,
 } from "@pos/ui";
 
+const N8N_PRODUCT_SCAN_WEBHOOK_URL =
+  "https://primary-production-34a63.up.railway.app/webhook/YOUR-WEBHOOK-PATH";
+
 interface CartItem {
   product: Product;
   quantity: number;
@@ -28,7 +31,6 @@ interface StoreProfile {
   phone: string;
 }
 
-// Invoice numbers are counted per store so two shops on one device never share a counter.
 let invoiceScope = "unscoped";
 const invoiceKey = () => `pos:nextInvoiceNo:${invoiceScope}`;
 const INVOICE_SEED = 17;
@@ -62,13 +64,14 @@ export default function CheckoutPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [receipt, setReceipt] = useState<Order | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [scanningPhoto, setScanningPhoto] = useState(false);
   const [error, setError] = useState("");
   const [invoiceNo, setInvoiceNo] = useState("local-17");
   const [attendantName, setAttendantName] = useState("Nasir Farooq");
 
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
@@ -101,7 +104,6 @@ export default function CheckoutPage() {
         setStoreInfo(res);
       }
     } catch (err) {
-      // Never fall back to another store's details.
       console.error("Failed to load store profile", err);
       setStoreInfo({ name: "Store", details: "", phone: "" });
     }
@@ -118,44 +120,6 @@ export default function CheckoutPage() {
     }
   }
 
-  function startVoiceSearch() {
-    // @ts-expect-error window.webkitSpeechRecognition support
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setError("Voice search is not supported on this browser. Please use Chrome.");
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      setIsListening(true);
-      setError("🎤 Listening... Speak item name");
-    };
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
-      const spokenText = event.results[0][0].transcript;
-      setItemNameInput(spokenText);
-      setIsListening(false);
-      setError(`🎤 Spoken: ${spokenText}`);
-    };
-
-    recognition.onerror = () => {
-      setIsListening(false);
-      setError("Voice recognition error. Please try again.");
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognition.start();
-  }
-
   async function startCameraScanner() {
     setError("");
     try {
@@ -170,7 +134,6 @@ export default function CheckoutPage() {
           videoRef.current.srcObject = stream;
           videoRef.current.play();
         }
-        detectBarcodeLoop();
       }, 200);
     } catch {
       setError("Camera access denied or not supported on this browser.");
@@ -185,36 +148,84 @@ export default function CheckoutPage() {
     setCameraOpen(false);
   }
 
-  async function detectBarcodeLoop() {
-    if (!("BarcodeDetector" in window)) {
-      setError("Live camera BarcodeDetector not supported in this browser.");
-      return;
-    }
+  async function captureAndScanProductPhoto() {
+    if (!videoRef.current || scanningPhoto) return;
 
-    // @ts-expect-error BarcodeDetector experimental support
-    const detector = new window.BarcodeDetector({
-      formats: ["qr_code", "ean_13", "ean_8", "code_128", "code_39", "upc_a", "upc_e"],
-    });
+    const video = videoRef.current;
+    const canvas = canvasRef.current || document.createElement("canvas");
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
 
-    const scanFrame = async () => {
-      if (!videoRef.current || !streamRef.current) return;
-      try {
-        const barcodes = await detector.detect(videoRef.current);
-        if (barcodes.length > 0 && barcodes[0].rawValue) {
-          const scannedCode = barcodes[0].rawValue;
-          stopCamera();
-          handleBarcodeScanned(scannedCode);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    setScanningPhoto(true);
+    setError("📷 تصویر n8n کو بھیجی جا رہی ہے...");
+
+    canvas.toBlob(
+      async (blob) => {
+        if (!blob) {
+          setScanningPhoto(false);
+          setError("❌ تصویر کیپچر نہیں ہو سکی، دوبارہ کوشش کریں۔");
           return;
         }
-      } catch {
-        // Ignore single frame error
-      }
-      if (streamRef.current) {
-        requestAnimationFrame(scanFrame);
-      }
-    };
 
-    requestAnimationFrame(scanFrame);
+        try {
+          const formData = new FormData();
+          formData.append("image", blob, "product-scan.jpg");
+          formData.append("scan_type", "product");
+
+          const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+
+          const raw = await res.json();
+          const payload = Array.isArray(raw) ? raw[0] : raw;
+
+          const extractedName = String(
+            payload?.product_name ?? payload?.name ?? ""
+          ).trim();
+          const extractedBarcode = String(
+            payload?.barcode ?? payload?.sku ?? ""
+          ).trim();
+
+          if (extractedName) {
+            setItemNameInput(extractedName);
+          }
+          if (extractedBarcode) {
+            setBarcodeInput(extractedBarcode);
+            const matched = products.find(
+              (p) =>
+                (p.sku && p.sku.toLowerCase() === extractedBarcode.toLowerCase()) ||
+                p.id === extractedBarcode
+            );
+            if (matched?.price && !priceInput) {
+              setPriceInput(matched.price);
+            }
+          }
+
+          stopCamera();
+          setError(
+            `✔ اسکین مکمل: ${extractedName || "نام نہیں ملا"} | بار کوڈ: ${
+              extractedBarcode || "نہیں ملا"
+            }`
+          );
+        } catch (err) {
+          console.error("n8n product scan failed:", err);
+          setError("❌ n8n سے جواب نہیں آیا، ویب ہک یا انٹرنیٹ چیک کریں۔");
+        } finally {
+          setScanningPhoto(false);
+        }
+      },
+      "image/jpeg",
+      0.85
+    );
   }
 
   function handleBarcodeScanned(code: string) {
@@ -230,10 +241,6 @@ export default function CheckoutPage() {
       setItemNameInput(found.name);
       setPriceInput(found.price || "");
       setError(`⚡ Auto-matched: ${found.name}`);
-    } else {
-      setItemNameInput(`Item-${trimmed}`);
-      setPriceInput("");
-      setError(`⚡ New Barcode. Name auto-filled, adjust price if needed.`);
     }
   }
 
@@ -250,37 +257,38 @@ export default function CheckoutPage() {
       (p) => p.sku && p.sku.toLowerCase() === sku.toLowerCase(),
     );
 
-    if (!targetProduct) try {
-      // پروڈکٹ کو براہ راست سرور اور انوینٹری ڈیٹا بیس میں محفوظ کرنا
-      const response = await apiFetch<Product | { data: Product }>("/products", {
-        method: "POST",
-        body: JSON.stringify({
-          name,
-          sku,
-          price,
-          stockQty: 9999,
-        }),
-      });
-
-      const savedProduct =
-        response && typeof response === "object" && "data" in response
-          ? (response as { data: Product }).data
-          : (response as Product);
-
-      if (savedProduct && savedProduct.id) {
-        targetProduct = savedProduct;
-        setProducts((prev) => {
-          const exists = prev.findIndex((p) => p.id === savedProduct.id);
-          if (exists >= 0) {
-            return prev.map((p) => (p.id === savedProduct.id ? savedProduct : p));
-          }
-          return [...prev, savedProduct];
+    if (!targetProduct) {
+      try {
+        const response = await apiFetch<Product | { data: Product }>("/products", {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            sku,
+            price,
+            stockQty: 9999,
+          }),
         });
+
+        const savedProduct =
+          response && typeof response === "object" && "data" in response
+            ? (response as { data: Product }).data
+            : (response as Product);
+
+        if (savedProduct && savedProduct.id) {
+          targetProduct = savedProduct;
+          setProducts((prev) => {
+            const exists = prev.findIndex((p) => p.id === savedProduct.id);
+            if (exists >= 0) {
+              return prev.map((p) => (p.id === savedProduct.id ? savedProduct : p));
+            }
+            return [...prev, savedProduct];
+          });
+        }
+      } catch (err) {
+        console.error("Failed to save product to inventory server:", err);
+        setError("❌ پروڈکٹ سرور پر سیو کرنے میں خرابی ہوئی۔ براہ کرم انٹرنیٹ یا لاگ ان چیک کریں۔");
+        return;
       }
-    } catch (err) {
-      console.error("Failed to save product to inventory server:", err);
-      setError("❌ پروڈکٹ سرور پر سیو کرنے میں خرابی ہوئی۔ براہ کرم انٹرنیٹ یا لاگ ان چیک کریں۔");
-      return;
     }
 
     if (!targetProduct) {
@@ -288,19 +296,16 @@ export default function CheckoutPage() {
       return;
     }
 
-    if (targetProduct) {
-      addToCart(targetProduct, qty);
-      // Re-read the list from the server so the list matches what is really stored.
-      await loadProducts();
-      setError(`✔ آئٹم کامیابی کے ساتھ انوینٹری میں سیو اور کارٹ میں ایڈ ہو گئی ہے!`);
-      
-      setBarcodeInput("");
-      setItemNameInput("");
-      setQtyInput("1");
-      setPriceInput("");
-      if (barcodeInputRef.current) {
-        barcodeInputRef.current.focus();
-      }
+    addToCart(targetProduct, qty);
+    await loadProducts();
+    setError(`✔ آئٹم کامیابی کے ساتھ انوینٹری میں سیو اور کارٹ میں ایڈ ہو گئی ہے!`);
+
+    setBarcodeInput("");
+    setItemNameInput("");
+    setQtyInput("1");
+    setPriceInput("");
+    if (barcodeInputRef.current) {
+      barcodeInputRef.current.focus();
     }
   }
 
@@ -381,10 +386,8 @@ export default function CheckoutPage() {
       setReceipt({ ...order, id: issuedInvoice } as Order);
       setCart([]);
       setInvoiceNo(`local-${readNextInvoice()}`);
-      // Stock changed on the server: refresh the list.
       await loadProducts();
     } catch (err) {
-      // The sale was NOT saved: keep the cart so nothing is lost, and say why.
       setError(
         `❌ سیل محفوظ نہیں ہوئی: ${err instanceof Error ? err.message : "Checkout failed"}`,
       );
@@ -395,13 +398,13 @@ export default function CheckoutPage() {
 
   function sendWhatsAppReceipt(targetPhone?: string) {
     if (!receipt) return;
-    
+
     let itemsText = "";
     receipt.items?.forEach((item, index) => {
       itemsText += `${index + 1}. ${item.productName} (${item.unitPrice} x ${item.quantity}) - Rs ${(parseFloat(item.unitPrice) * item.quantity).toFixed(2)}\n`;
     });
 
-    const message = 
+    const message =
       `*${storeInfo.name}*\n` +
       `${storeInfo.details}\n` +
       `Ph: ${storeInfo.phone}\n` +
@@ -417,7 +420,7 @@ export default function CheckoutPage() {
 
     const encodedMessage = encodeURIComponent(message);
     let url = `https://wa.me/?text=${encodedMessage}`;
-    
+
     if (targetPhone && targetPhone.trim().length > 5) {
       const cleanPhone = targetPhone.replace(/[^0-9]/g, "");
       url = `https://wa.me/${cleanPhone}?text=${encodedMessage}`;
@@ -549,8 +552,8 @@ export default function CheckoutPage() {
               className="h-12 text-base flex-1 min-w-[200px]"
               autoFocus
             />
-            <Button 
-              type="button" 
+            <Button
+              type="button"
               onClick={() => handleBarcodeScanned(barcodeInput)}
               className="h-12 px-6 bg-slate-900 hover:bg-slate-800 text-white font-medium"
             >
@@ -578,31 +581,34 @@ export default function CheckoutPage() {
           </div>
 
           {cameraOpen && (
-            <div className="relative overflow-hidden rounded-xl border-2 border-blue-500 bg-black">
-              <video ref={videoRef} className="w-full max-h-64 object-cover" playsInline muted />
-              <p className="bg-blue-600 text-white text-center text-xs py-1">
-                Point camera at Barcode
-              </p>
+            <div className="space-y-2 overflow-hidden rounded-xl border-2 border-blue-500 bg-black p-2">
+              <video ref={videoRef} className="w-full max-h-64 rounded object-cover" playsInline muted />
+              <canvas ref={canvasRef} className="hidden" />
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-white text-xs">
+                  Point camera at product name & barcode, then tap Capture
+                </p>
+                <Button
+                  type="button"
+                  onClick={captureAndScanProductPhoto}
+                  disabled={scanningPhoto}
+                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                >
+                  {scanningPhoto ? "Scanning..." : "📸 Capture Product Photo"}
+                </Button>
+              </div>
             </div>
           )}
 
           <form onSubmit={handleAddAndSave} className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50">
-            <div className="relative flex items-center">
+            <div>
               <Input
-                placeholder="Item Name (Auto-fills on scan or use mic)..."
+                placeholder="Item Name (Auto-fills on scan)..."
                 value={itemNameInput}
                 onChange={(e) => setItemNameInput(e.target.value)}
-                className="h-12 text-base pr-12 bg-white font-medium"
+                className="h-12 text-base bg-white font-medium"
                 required
               />
-              <button
-                type="button"
-                onClick={startVoiceSearch}
-                className="absolute right-3 p-2 text-amber-600 hover:text-amber-700 text-lg"
-                title="Voice Search (Speak Item Name)"
-              >
-                🎤 {isListening ? "..." : ""}
-              </button>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -649,7 +655,7 @@ export default function CheckoutPage() {
                 {cart.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
-                      Scan barcode or speak item name to add instantly...
+                      Scan barcode or capture product photo to add instantly...
                     </td>
                   </tr>
                 ) : (
@@ -717,7 +723,7 @@ export default function CheckoutPage() {
                   <span>Subtotal</span>
                   <span>Rs {subtotal.toFixed(2)}</span>
                 </div>
-                
+
                 <div className="flex items-center justify-between pt-1">
                   <span className="text-slate-700 font-medium">Discount (Rs)</span>
                   <Input
