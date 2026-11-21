@@ -1011,3 +1011,671 @@ export default function InventoryPage() {
     link.click();
     document.body.removeChild(link);
   }
+const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+    return matchesSearch;
+  });
+
+  const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
+  const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
+
+  const todaySales = salesEntries.filter((e) => e.date === todayDate);
+  const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
+  const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
+  const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
+  const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
+
+  const todayKhata = khataEntries.filter((e) => e.date === todayDate);
+  const todayCashIn = todayKhata
+    .filter((k) => k.entryType === "cash_in")
+    .reduce((s, k) => s + k.amount, 0);
+  const todayKhataOut = todayKhata
+    .filter((k) => k.entryType === "khata" || k.entryType === "expense")
+    .reduce((s, k) => s + k.amount, 0);
+  const khataHisabBalance = todaySalesTotal + todayCashIn - todayKhataOut;
+
+  const allDates = Array.from(
+    new Set([
+      ...purchaseEntries.map((p) => p.date),
+      ...salesEntries.map((s) => s.date),
+      ...khataEntries.map((k) => k.date),
+      todayDate,
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+
+  const dateClosingSummary = allDates.map((d) => {
+    const pRows = purchaseEntries.filter((p) => p.date === d);
+    const sRows = salesEntries.filter((s) => s.date === d);
+    const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
+    const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
+    const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
+    const sQty = sRows.reduce((acc, r) => acc + r.qty, 0);
+    const profitTotal = sRows.reduce((acc, r) => acc + r.profit, 0);
+    const isClosed = d < todayDate;
+
+    return {
+      date: d,
+      pQty,
+      pTotal,
+      sQty,
+      sTotal,
+      profitTotal,
+      isClosed,
+    };
+  });
+
+  return (
+    <AppShell
+      title="Inventory"
+      nav={
+        <nav className="flex gap-4 text-sm">
+          <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
+            Dashboard
+          </a>
+          <a href="/inventory" className="font-medium text-slate-900">
+            Inventory
+          </a>
+          <a href="/checkout" className="text-slate-600 hover:text-slate-900">
+            Checkout
+          </a>
+        </nav>
+      }
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
+          <p className="text-sm font-medium text-slate-600">
+            {storeInfo.details}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          {storeInfo.phone && (
+            <span className="rounded bg-slate-100 px-3 py-1 font-medium text-slate-700">
+              📞 {storeInfo.phone}
+            </span>
+          )}
+          <span className="rounded bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+            Active Date: {todayDate}
+          </span>
+        </div>
+      </div>
+
+      <PageHeader
+        title="Inventory & Wholesale Purchase"
+        description="بارکوڈ / کیمرہ اسکین یا دستی اندراج سے اسٹاک اور ہول سیل Purchase Ledger اپ ڈیٹ کریں۔"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/checkout")}
+            >
+              Checkout Counter
+            </Button>
+            <Button type="button" variant="outline" onClick={exportToCSV}>
+              Export CSV
+            </Button>
+            <label className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+              Import CSV
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleCSVImport}
+                className="hidden"
+              />
+            </label>
+          </div>
+        }
+      />
+
+      {error && (
+        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+          {error}
+        </div>
+      )}
+
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Wholesale Purchase Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">
+              {todayPurchaseQty}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Sold Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">{todaySoldQty}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Sales Total
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-emerald-700">
+              {formatMoney(todaySalesTotal)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Cost: {formatMoney(todayCostOfSold)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Net Profit / Hisab
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-blue-700">
+              {formatMoney(todayNetProfit)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Khata Balance: {formatMoney(khataHisabBalance)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Add / Restock Product</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleAddProduct} className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Supplier / Bill Ref
+                  </label>
+                  <Input
+                    value={supplierOrBill}
+                    onChange={(e) => setSupplierOrBill(e.target.value)}
+                    placeholder="Supplier name or bill #"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Barcode / SKU
+                  </label>
+                  <Input
+                    value={sku}
+                    onChange={(e) => handleBarcodeLookup(e.target.value)}
+                    placeholder="Scan or enter SKU"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-700">
+                  Product Name
+                </label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Enter product name"
+                  required
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Cost Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={costPrice}
+                    onChange={(e) => setCostPrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Sale Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={salePrice}
+                    onChange={(e) => setSalePrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Stock Qty
+                  </label>
+                  <Input
+                    type="number"
+                    value={stockQty}
+                    onChange={(e) => setStockQty(e.target.value)}
+                    placeholder="100"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button type="submit">Save to Inventory</Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={cameraOpen ? stopCamera : startCameraScanner}
+                >
+                  {cameraOpen ? "Stop Camera" : "Scan Bill / Product"}
+                </Button>
+              </div>
+            </form>
+
+            {cameraOpen && (
+              <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-950 p-3">
+                <video
+                  ref={videoRef}
+                  className="max-h-64 w-full rounded bg-black object-contain"
+                  playsInline
+                  muted
+                />
+                <canvas ref={canvasRef} className="hidden" />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    disabled={scanningPhoto}
+                    onClick={captureAndScanWholesale}
+                  >
+                    {scanningPhoto ? "Scanning..." : "Capture & Scan"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {scannedBillItems.length > 0 && (
+              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold text-emerald-900">
+                    Scanned Bill Items ({scannedBillItems.length})
+                  </span>
+                  <Button
+                    type="button"
+                    onClick={handleAddAllScannedBillItems}
+                  >
+                    Add All Items
+                  </Button>
+                </div>
+                <ul className="space-y-1 text-xs text-emerald-950">
+                  {scannedBillItems.map((it, idx) => (
+                    <li key={`${it.sku}-${idx}`}>
+                      {it.name} ({it.sku}) — Qty: {it.qty}, Cost: {it.costPrice}, Sale:{" "}
+                      {it.salePrice}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Scanner &amp; Receipt Printer</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {(["Barcode", "USB", "Bluetooth", "Keyboard"] as DeviceChannel[]).map(
+                (ch) => (
+                  <Button
+                    key={ch}
+                    type="button"
+                    variant={selectedChannel === ch ? "default" : "outline"}
+                    onClick={() => handleConnectChannel(ch)}
+                  >
+                    {ch}
+                  </Button>
+                )
+              )}
+            </div>
+
+            <p className="text-xs text-slate-600">{deviceStatusText}</p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePrintCustomerReceipt}
+              >
+                Print Receipt
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => collectBarcodeEntry(sku || "TEST-SKU", selectedChannel)}
+              >
+                Log Code
+              </Button>
+            </div>
+
+            {collectedCodes.length > 0 && (
+              <div className="max-h-40 overflow-y-auto rounded border border-slate-200 p-2 text-xs">
+                {collectedCodes.map((c) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between border-b border-slate-100 py-1 last:border-b-0"
+                  >
+                    <span>
+                      <strong>{c.code}</strong> ({c.channel})
+                      {c.matchedName ? ` — ${c.matchedName}` : ""}
+                    </span>
+                    <span className="text-slate-500">{c.time}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>Products ({filteredProducts.length})</CardTitle>
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name or SKU..."
+              className="max-w-xs"
+            />
+          </div>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <p className="text-sm text-slate-500">Loading products...</p>
+          ) : filteredProducts.length === 0 ? (
+            <p className="text-sm text-slate-500">No products found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-4">SKU</th>
+                    <th className="py-2 pr-4">Name</th>
+                    <th className="py-2 pr-4">Cost</th>
+                    <th className="py-2 pr-4">Sale Price</th>
+                    <th className="py-2 pr-4">Stock</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProducts.map((p) => {
+                    const uCost = lookupUnitCost(
+                      p.id,
+                      p.sku,
+                      parseFloat(p.price || "0") || 0
+                    );
+                    return (
+                      <tr key={p.id} className="border-b border-slate-100">
+                        <td className="py-2 pr-4 font-mono text-xs">{p.sku || "-"}</td>
+                        <td className="py-2 pr-4 font-medium">{p.name}</td>
+                        <td className="py-2 pr-4">{formatMoney(uCost)}</td>
+                        <td className="py-2 pr-4">
+                          {formatMoney(parseFloat(p.price || "0") || 0)}
+                        </td>
+                        <td className="py-2 pr-4">{p.stockQty}</td>
+                        <td className="py-2">
+                          <Badge
+                            variant={
+                              p.stockQty > 5
+                                ? "success"
+                                : p.stockQty > 0
+                                ? "warning"
+                                : "destructive"
+                            }
+                          >
+                            {p.stockQty > 5
+                              ? "In Stock"
+                              : p.stockQty > 0
+                              ? "Low Stock"
+                              : "Out of Stock"}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-bold tracking-wide uppercase text-slate-900">
+                SEPARATE DAILY LEDGERS ({todayDate})
+              </h2>
+              <span className="rounded border border-emerald-700/60 bg-emerald-900/70 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+                {`Day Open (${todayDate}) • rolls over at 12:00 AM`}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant={activeLedgerTab === "purchase" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("purchase")}
+              >
+                Purchase ({purchaseEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "sales" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("sales")}
+              >
+                Sales ({salesEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "khata" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("khata")}
+              >
+                Khata / Hisab ({khataEntries.length})
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {activeLedgerTab === "purchase" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Supplier / Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Cost</th>
+                    <th className="py-2">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.supplierOrBill}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.costPrice)}</td>
+                      <td className="py-2 font-semibold">
+                        {formatMoney(row.totalPurchase)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "sales" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Sale</th>
+                    <th className="py-2">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.billRef}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.totalSale)}</td>
+                      <td className="py-2 font-semibold text-emerald-700">
+                        {formatMoney(row.profit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "khata" && (
+            <div className="space-y-4">
+              <form
+                onSubmit={handleAddKhataEntry}
+                className="flex flex-wrap items-end gap-2"
+              >
+                <Input
+                  value={khataTitle}
+                  onChange={(e) => setKhataTitle(e.target.value)}
+                  placeholder="Entry description..."
+                  className="min-w-48 flex-1"
+                  required
+                />
+                <Input
+                  type="number"
+                  step="any"
+                  value={khataAmount}
+                  onChange={(e) => setKhataAmount(e.target.value)}
+                  placeholder="Amount (Rs)"
+                  className="w-36"
+                  required
+                />
+                <select
+                  value={khataType}
+                  onChange={(e) =>
+                    setKhataType(e.target.value as KhataEntryType)
+                  }
+                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                >
+                  <option value="khata">Khata Out</option>
+                  <option value="expense">Expense</option>
+                  <option value="cash_in">Cash In</option>
+                </select>
+                <Button type="submit">Add Entry</Button>
+              </form>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                      <th className="py-2 pr-3">Date / Time</th>
+                      <th className="py-2 pr-3">Description</th>
+                      <th className="py-2 pr-3">Type</th>
+                      <th className="py-2">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {khataEntries.map((row) => (
+                      <tr key={row.id} className="border-b border-slate-100">
+                        <td className="py-2 pr-3 text-xs">
+                          {row.date} {row.time}
+                        </td>
+                        <td className="py-2 pr-3">{row.title}</td>
+                        <td className="py-2 pr-3 uppercase text-xs">
+                          {row.entryType}
+                        </td>
+                        <td className="py-2 font-semibold">
+                          {formatMoney(row.amount)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="mb-2 text-xs font-bold uppercase text-slate-600">
+              Daily Rollover Summary
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="py-2 pr-3">Purchase</th>
+                    <th className="py-2 pr-3">Sales</th>
+                    <th className="py-2 pr-3">Profit</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dateClosingSummary.map((day) => (
+                    <tr key={day.date} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 font-medium">{day.date}</td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.pTotal)} ({day.pQty})
+                      </td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.sTotal)} ({day.sQty})
+                      </td>
+                      <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
+                      <td className="py-2">
+                        <Badge variant={day.isClosed ? "secondary" : "success"}>
+                          {day.isClosed ? "Closed" : "Open"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </AppShell>
+  );
+}
