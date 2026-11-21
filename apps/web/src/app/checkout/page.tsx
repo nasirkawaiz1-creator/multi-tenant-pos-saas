@@ -31,15 +31,6 @@ interface StoreProfile {
   phone: string;
 }
 
-interface DailyLedgerEntry {
-  date: string;
-  invoiceCount: number;
-  lastInvoiceNo: string;
-  lastBillAmount: number;
-  totalSales: number;
-}
-
-// ہر دکان کا الگ بل نمبر 01, 02, 03, 04... سے شروع کرنے کے لیے
 let invoiceScope = "unscoped";
 const INVOICE_SEED = 1;
 
@@ -61,23 +52,6 @@ function getInvoiceStorageKey(scope: string = invoiceScope): string {
   return `pos:nextInvoiceNo:${cleanScope}`;
 }
 
-function getLedgerStorageKey(
-  scope: string = invoiceScope,
-  dateKey: string = getTodayDateKey()
-): string {
-  const cleanScope = encodeURIComponent(
-    String(scope || "unscoped").trim().toLowerCase()
-  );
-  return `pos:dailyLedger:${cleanScope}:${dateKey}`;
-}
-
-function getLedgerIndexStorageKey(scope: string = invoiceScope): string {
-  const cleanScope = encodeURIComponent(
-    String(scope || "unscoped").trim().toLowerCase()
-  );
-  return `pos:dailyLedgerDates:${cleanScope}`;
-}
-
 function readNextInvoice(scope: string = invoiceScope): number {
   try {
     const n = Number(localStorage.getItem(getInvoiceStorageKey(scope)));
@@ -85,108 +59,6 @@ function readNextInvoice(scope: string = invoiceScope): number {
   } catch {
     return INVOICE_SEED;
   }
-}
-
-function readLedgerDates(scope: string = invoiceScope): string[] {
-  try {
-    const raw = localStorage.getItem(getLedgerIndexStorageKey(scope));
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.map(String);
-      }
-    }
-  } catch {}
-  return [];
-}
-
-function readLedgerEntry(
-  scope: string = invoiceScope,
-  dateKey: string = getTodayDateKey()
-): DailyLedgerEntry | null {
-  try {
-    const raw = localStorage.getItem(getLedgerStorageKey(scope, dateKey));
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<DailyLedgerEntry>;
-      return {
-        date: dateKey,
-        invoiceCount: Number(parsed.invoiceCount) || 0,
-        lastInvoiceNo: String(parsed.lastInvoiceNo || "--"),
-        lastBillAmount: Number(parsed.lastBillAmount) || 0,
-        totalSales: Number(parsed.totalSales) || 0,
-      };
-    }
-  } catch {}
-  return null;
-}
-
-function getSortedLedger(scope: string = invoiceScope): DailyLedgerEntry[] {
-  const dates = Array.from(new Set(readLedgerDates(scope))).sort((a, b) =>
-    b.localeCompare(a)
-  );
-  const rows: DailyLedgerEntry[] = [];
-  for (const d of dates) {
-    const entry = readLedgerEntry(scope, d);
-    if (entry) {
-      rows.push(entry);
-    }
-  }
-  return rows;
-}
-
-function recordSaleInLedger(
-  scope: string,
-  amount: number,
-  dateKey: string = getTodayDateKey()
-): {
-  issuedInvoice: string;
-  nextInvoiceFormatted: string;
-  todayEntry: DailyLedgerEntry;
-  ledgerList: DailyLedgerEntry[];
-} {
-  const currentSeq = readNextInvoice(scope);
-  const nextSeq = currentSeq + 1;
-  const issuedInvoice = formatInvoiceNumber(currentSeq);
-  const nextInvoiceFormatted = formatInvoiceNumber(nextSeq);
-
-  const existing = readLedgerEntry(scope, dateKey) || {
-    date: dateKey,
-    invoiceCount: 0,
-    lastInvoiceNo: issuedInvoice,
-    lastBillAmount: 0,
-    totalSales: 0,
-  };
-
-  const roundedAmount = Math.round(amount * 100) / 100;
-
-  const updatedEntry: DailyLedgerEntry = {
-    date: dateKey,
-    invoiceCount: existing.invoiceCount + 1,
-    lastInvoiceNo: issuedInvoice,
-    lastBillAmount: roundedAmount,
-    totalSales: Math.round((existing.totalSales + roundedAmount) * 100) / 100,
-  };
-
-  const updatedDates = Array.from(new Set([...readLedgerDates(scope), dateKey]));
-
-  try {
-    localStorage.setItem(getInvoiceStorageKey(scope), String(nextSeq));
-    localStorage.setItem(
-      getLedgerStorageKey(scope, dateKey),
-      JSON.stringify(updatedEntry)
-    );
-    localStorage.setItem(
-      getLedgerIndexStorageKey(scope),
-      JSON.stringify(updatedDates)
-    );
-  } catch {}
-
-  return {
-    issuedInvoice,
-    nextInvoiceFormatted,
-    todayEntry: updatedEntry,
-    ledgerList: getSortedLedger(scope),
-  };
 }
 
 export default function CheckoutPage() {
@@ -206,7 +78,6 @@ export default function CheckoutPage() {
   const [error, setError] = useState("");
   const [currentDateKey, setCurrentDateKey] = useState<string>(getTodayDateKey());
   const [invoiceNo, setInvoiceNo] = useState(formatInvoiceNumber(INVOICE_SEED));
-  const [ledgerList, setLedgerList] = useState<DailyLedgerEntry[]>([]);
   const [attendantName, setAttendantName] = useState("Nasir Farooq");
 
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -225,7 +96,6 @@ export default function CheckoutPage() {
     invoiceScope = scope;
     setCurrentDateKey(dateKey);
     setInvoiceNo(formatInvoiceNumber(readNextInvoice(scope)));
-    setLedgerList(getSortedLedger(scope));
   }
 
   useEffect(() => {
@@ -571,14 +441,24 @@ export default function CheckoutPage() {
         }),
       });
 
-      const recorded = recordSaleInLedger(activeScope, total, activeDate);
+      const currentSeq = readNextInvoice(activeScope);
+      const nextSeq = currentSeq + 1;
+      const issuedInvoice = formatInvoiceNumber(currentSeq);
+      const nextInvoiceFormatted = formatInvoiceNumber(nextSeq);
+
+      try {
+        localStorage.setItem(
+          getInvoiceStorageKey(activeScope),
+          String(nextSeq)
+        );
+      } catch {}
+
       invoiceScope = activeScope;
       setCurrentDateKey(activeDate);
       setReceiptDate(activeDate);
-      setReceipt({ ...order, id: recorded.issuedInvoice } as Order);
-      setLedgerList(recorded.ledgerList);
+      setReceipt({ ...order, id: issuedInvoice } as Order);
       setCart([]);
-      setInvoiceNo(recorded.nextInvoiceFormatted);
+      setInvoiceNo(nextInvoiceFormatted);
       await loadProducts();
     } catch (err) {
       setError(
@@ -626,16 +506,6 @@ export default function CheckoutPage() {
 
     window.open(url, "_blank");
   }
-
-  const todaySummary = ledgerList.find(
-    (item) => item.date === currentDateKey
-  ) || {
-    date: currentDateKey,
-    invoiceCount: 0,
-    lastInvoiceNo: "--",
-    lastBillAmount: 0,
-    totalSales: 0,
-  };
 
   if (receipt) {
     return (
@@ -878,176 +748,91 @@ export default function CheckoutPage() {
             </p>
           )}
 
-          {/* آئٹمز ٹیبل اور اس کے بالکل نیچے روزانہ کے بل اور ڈے کلوزنگ ٹوٹل کا حساب */}
-          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm text-left">
-                <thead className="bg-blue-600 text-white text-xs uppercase">
+          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-blue-600 text-white text-xs uppercase">
+                <tr>
+                  <th className="px-3 py-3">Code</th>
+                  <th className="px-3 py-3">Item Name</th>
+                  <th className="px-3 py-3 text-center">Qty</th>
+                  <th className="px-3 py-3 text-right">Price (Rs)</th>
+                  <th className="px-3 py-3 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {cart.length === 0 ? (
                   <tr>
-                    <th className="px-3 py-3">Code</th>
-                    <th className="px-3 py-3">Item Name</th>
-                    <th className="px-3 py-3 text-center">Qty</th>
-                    <th className="px-3 py-3 text-right">Price (Rs)</th>
-                    <th className="px-3 py-3 text-right">Total</th>
+                    <td
+                      colSpan={5}
+                      className="px-4 py-8 text-center text-slate-400"
+                    >
+                      Scan barcode or capture product photo to add instantly...
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {cart.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={5}
-                        className="px-4 py-8 text-center text-slate-400"
-                      >
-                        Scan barcode or capture product photo to add instantly...
-                      </td>
-                    </tr>
-                  ) : (
-                    cart.map((item) => {
-                      const rowTotal = (
-                        (parseFloat(item.product.price) || 0) * item.quantity
-                      ).toFixed(2);
-                      return (
-                        <tr key={item.product.id}>
-                          <td className="px-3 py-2 text-xs font-mono text-slate-600">
-                            {item.product.sku}
-                          </td>
-                          <td className="px-3 py-2 font-medium text-slate-900">
-                            {item.product.name}
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="flex items-center justify-center gap-1">
-                              <Button
-                                size="icon"
-                                variant="outline"
-                                className="h-7 w-7"
-                                onClick={() => updateQty(item.product.id, -1)}
-                              >
-                                −
-                              </Button>
-                              <input
-                                type="number"
-                                min={1}
-                                value={item.quantity}
-                                onChange={(e) =>
-                                  setExactQty(
-                                    item.product.id,
-                                    parseInt(e.target.value) || 0
-                                  )
-                                }
-                                className="w-12 rounded border border-slate-300 text-center text-sm font-bold py-0.5"
-                              />
-                              <Button
-                                size="icon"
-                                variant="outline"
-                                className="h-7 w-7"
-                                onClick={() => updateQty(item.product.id, 1)}
-                              >
-                                +
-                              </Button>
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 text-right">
+                ) : (
+                  cart.map((item) => {
+                    const rowTotal = (
+                      (parseFloat(item.product.price) || 0) * item.quantity
+                    ).toFixed(2);
+                    return (
+                      <tr key={item.product.id}>
+                        <td className="px-3 py-2 text-xs font-mono text-slate-600">
+                          {item.product.sku}
+                        </td>
+                        <td className="px-3 py-2 font-medium text-slate-900">
+                          {item.product.name}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center justify-center gap-1">
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="h-7 w-7"
+                              onClick={() => updateQty(item.product.id, -1)}
+                            >
+                              −
+                            </Button>
                             <input
                               type="number"
-                              value={item.product.price}
+                              min={1}
+                              value={item.quantity}
                               onChange={(e) =>
-                                updateItemPrice(item.product.id, e.target.value)
+                                setExactQty(
+                                  item.product.id,
+                                  parseInt(e.target.value) || 0
+                                )
                               }
-                              className="w-20 rounded border border-slate-300 text-right text-sm px-1 py-0.5"
+                              className="w-12 rounded border border-slate-300 text-center text-sm font-bold py-0.5"
                             />
-                          </td>
-                          <td className="px-3 py-2 text-right font-bold">
-                            {rowTotal}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* ٹیبل کے بالکل نیچے آج کی تاریخ، بل کی رقم، اور پورے دن کا کلوزنگ حساب */}
-            <div className="border-t border-slate-200 bg-slate-900 text-white p-4 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2">
-                <span className="text-xs font-bold uppercase tracking-wide text-slate-200">
-                  Daily Checkout Detail ({storeInfo.name})
-                </span>
-                <span className="text-xs font-mono text-blue-300">
-                  Date: {currentDateKey} | Next Bill: #{invoiceNo}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                <div className="rounded-lg bg-slate-800 p-2.5">
-                  <div className="text-slate-400">Today Date</div>
-                  <div className="mt-0.5 font-bold text-white">
-                    {todaySummary.date}
-                  </div>
-                </div>
-                <div className="rounded-lg bg-slate-800 p-2.5">
-                  <div className="text-slate-400">Current Bill Amount</div>
-                  <div className="mt-0.5 font-bold text-blue-300">
-                    Rs {total.toFixed(2)}
-                  </div>
-                </div>
-                <div className="rounded-lg bg-slate-800 p-2.5">
-                  <div className="text-slate-400">Bills Today</div>
-                  <div className="mt-0.5 font-bold text-white">
-                    {todaySummary.invoiceCount} (Last: #{todaySummary.lastInvoiceNo})
-                  </div>
-                </div>
-                <div className="rounded-lg bg-slate-800 p-2.5">
-                  <div className="text-slate-400">Day Closing Total</div>
-                  <div className="mt-0.5 font-bold text-emerald-400">
-                    Rs{" "}
-                    {todaySummary.totalSales.toLocaleString("en-PK", {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
-                  </div>
-                </div>
-              </div>
-
-              {ledgerList.length > 0 && (
-                <div className="overflow-x-auto pt-1">
-                  <table className="w-full text-xs text-left border-collapse">
-                    <thead>
-                      <tr className="border-b border-slate-700 text-slate-400 uppercase">
-                        <th className="py-1.5 pr-3">Date</th>
-                        <th className="py-1.5 px-3 text-center">Bills</th>
-                        <th className="py-1.5 px-3 text-center">Last Bill</th>
-                        <th className="py-1.5 px-3 text-right">Last Bill Rs</th>
-                        <th className="py-1.5 pl-3 text-right">Day Total</th>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="h-7 w-7"
+                              onClick={() => updateQty(item.product.id, 1)}
+                            >
+                              +
+                            </Button>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <input
+                            type="number"
+                            value={item.product.price}
+                            onChange={(e) =>
+                              updateItemPrice(item.product.id, e.target.value)
+                            }
+                            className="w-20 rounded border border-slate-300 text-right text-sm px-1 py-0.5"
+                          />
+                        </td>
+                        <td className="px-3 py-2 text-right font-bold">
+                          {rowTotal}
+                        </td>
                       </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {ledgerList.map((dayRow) => (
-                        <tr key={dayRow.date} className="text-slate-200">
-                          <td className="py-1.5 pr-3 font-mono">{dayRow.date}</td>
-                          <td className="py-1.5 px-3 text-center">
-                            {dayRow.invoiceCount}
-                          </td>
-                          <td className="py-1.5 px-3 text-center font-mono">
-                            #{dayRow.lastInvoiceNo}
-                          </td>
-                          <td className="py-1.5 px-3 text-right">
-                            Rs {dayRow.lastBillAmount.toFixed(2)}
-                          </td>
-                          <td className="py-1.5 pl-3 text-right font-bold text-emerald-400">
-                            Rs{" "}
-                            {dayRow.totalSales.toLocaleString("en-PK", {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
 
