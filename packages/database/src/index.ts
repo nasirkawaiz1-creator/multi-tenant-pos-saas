@@ -6,4 +6,4 @@ export {
   closeDb,
   type DbTransaction,
 } from "./tenant-context.js";
-export { and, eq, ilike, or, sql } from "drizzle-orm";
+export { and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
