@@ -170,17 +170,24 @@ export default function CheckoutPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const incomingSession = params.get("handoffSession");
+    if (incomingSession) {
+      setSessionCode(incomingSession);
+      setQrOpen(true);
+      setSyncNotice(`Session connected: ${incomingSession}`);
+      return;
+    }
+
     const billTag = receipt?.id || invoiceNo;
     const code = `POS-${billTag}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
     setSessionCode(code);
-
-    if (typeof window !== "undefined") {
-      const base = `${window.location.origin}${window.location.pathname}`;
-      const url = `${base}?handoffSession=${encodeURIComponent(
-        code
-      )}&bill=${encodeURIComponent(String(billTag))}`;
-      setHandoffUrl(url);
-    }
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const url = `${base}?handoffSession=${encodeURIComponent(
+      code
+    )}&bill=${encodeURIComponent(String(billTag))}`;
+    setHandoffUrl(url);
   }, [receipt?.id, invoiceNo]);
 
   useEffect(() => {
@@ -204,7 +211,7 @@ export default function CheckoutPage() {
         } as Product;
         addToCart(syntheticProduct, incoming.qty || 1);
         setSyncNotice(
-          `موبائل سے دستی آئٹم آ گیا: ${incoming.name} (x${incoming.qty || 1})`
+          `آئٹم شامل ہو گیا: ${incoming.name} (x${incoming.qty || 1})`
         );
       }
     };
@@ -309,11 +316,13 @@ export default function CheckoutPage() {
         }, 200);
       } else {
         setError(
-          "⚡ لائیو کیمرہ کھلا ہے — کوڈ اسکین کریں یا نیچے QR/Barcode باکس و مائیک استعمال کریں۔"
+          "⚡ کیمرہ آن ہے — کوڈ سکین کریں یا نیچے QR/Barcode باکس و مائیک استعمال کریں۔"
         );
       }
     } catch {
-      setError("Camera access denied or not supported on this browser.");
+      setError(
+        "کیمرہ دستیاب نہیں یا اجازت نہیں ملی؛ QR/Barcode باکس، بلوٹوتھ/کی بورڈ یا مائیک استعمال کریں۔"
+      );
     }
   }
 
@@ -391,7 +400,9 @@ export default function CheckoutPage() {
       setPriceInput(found.price || "");
       setError(`⚡ Auto-matched: ${found.name}`);
     } else {
-      setError(`⚡ Code "${trimmed}" ready — نام بولیں یا لکھیں اور Add & Save کریں۔`);
+      setError(
+        `⚡ Code "${trimmed}" ready — نام بولیں یا لکھیں اور Add & Save کریں۔`
+      );
     }
   }
 
@@ -671,7 +682,7 @@ export default function CheckoutPage() {
       price: String(item.price),
     } as Product;
     addToCart(syntheticProduct, item.qty);
-    setSyncNotice(`فوری بھیج دیا گیا: ${item.name}`);
+    setSyncNotice(`آئٹم شامل ہو گیا: ${item.name}`);
     setQuickMobileCode("");
     setQuickMobileName("");
     setQuickMobilePrice("");
@@ -692,7 +703,7 @@ export default function CheckoutPage() {
 
     return (
       <AppShell title="Checkout">
-        <div className="mx-auto max-w-md space-y-4">
+        <div className="mx-auto w-full max-w-md space-y-4 px-1 sm:px-0">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Receipt</CardTitle>
@@ -786,7 +797,7 @@ export default function CheckoutPage() {
                   <div className="space-y-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
                     <div className="text-center">
                       <p className="text-xs font-semibold text-slate-800">
-                        موبائل سے یہ QR اسکین کریں — Session: {sessionCode}
+                        موبائل سے یہ QR سکین کریں — Session: {sessionCode}
                       </p>
                       {qrImageSrc && (
                         <img
@@ -805,9 +816,9 @@ export default function CheckoutPage() {
                       className="space-y-2"
                     >
                       <p className="text-xs font-semibold text-slate-700">
-                        موبائل سے اسکین/بولا ہوا آئٹم دستی لیپ ٹاپ پر بھیجیں:
+                        موبائل سے سکین/بولا ہوا آئٹم بل میں شامل کریں:
                       </p>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <Input
                           placeholder="QR / Code"
                           value={quickMobileCode}
@@ -828,13 +839,13 @@ export default function CheckoutPage() {
                           placeholder="Item Name..."
                           value={quickMobileName}
                           onChange={(e) => setQuickMobileName(e.target.value)}
-                          className="bg-white text-xs"
+                          className="flex-1 bg-white text-xs"
                         />
                         <Button
                           type="submit"
                           className="whitespace-nowrap bg-blue-600 text-xs font-bold text-white hover:bg-blue-700"
                         >
-                          Send to Laptop
+                          Add Item
                         </Button>
                       </div>
                     </form>
@@ -872,7 +883,7 @@ export default function CheckoutPage() {
     <AppShell
       title="Checkout"
       nav={
-        <nav className="flex gap-4 text-sm">
+        <nav className="flex flex-wrap gap-3 text-sm sm:gap-4">
           <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
             Dashboard
           </a>
@@ -887,8 +898,10 @@ export default function CheckoutPage() {
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
-          <p className="text-sm font-medium text-slate-700">
+          <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
+            {storeInfo.name}
+          </h1>
+          <p className="text-xs font-medium text-slate-700 sm:text-sm">
             {storeInfo.details} | Ph: {storeInfo.phone} | Date: {currentDateKey}
           </p>
         </div>
@@ -905,46 +918,54 @@ export default function CheckoutPage() {
 
       <PageHeader
         title={`Checkout Terminal (Bill #${invoiceNo} • ${currentDateKey})`}
-        description="Instant QR / Barcode + Voice Mic Entry (No n8n Delay) ⚡"
+        description="Mobile & Laptop Active • QR / Barcode + Voice Mic Entry (No n8n Delay) ⚡"
       />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <Input
               ref={barcodeInputRef}
               placeholder="Scan Barcode / QR Code..."
               value={barcodeInput}
               onChange={(e) => handleBarcodeScanned(e.target.value)}
-              className="h-12 min-w-[200px] flex-1 text-base"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleBarcodeScanned(barcodeInput);
+                }
+              }}
+              className="h-12 w-full flex-1 text-base sm:min-w-[200px]"
               autoFocus
             />
-            <Button
-              type="button"
-              onClick={() => handleBarcodeScanned(barcodeInput)}
-              className="h-12 bg-slate-900 px-6 font-medium text-white hover:bg-slate-800"
-            >
-              Scan / Find
-            </Button>
-            {!cameraOpen ? (
+            <div className="flex gap-2">
               <Button
                 type="button"
-                variant="outline"
-                className="h-12 border-blue-600 px-4 text-blue-600"
-                onClick={startCameraScanner}
+                onClick={() => handleBarcodeScanned(barcodeInput)}
+                className="h-12 flex-1 bg-slate-900 px-5 font-medium text-white hover:bg-slate-800 sm:flex-none sm:px-6"
               >
-                📷 Camera Scan
+                Scan / Find
               </Button>
-            ) : (
-              <Button
-                type="button"
-                variant="destructive"
-                className="h-12 px-4"
-                onClick={stopCamera}
-              >
-                ✕ Close Camera
-              </Button>
-            )}
+              {!cameraOpen ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-12 flex-1 border-blue-600 px-4 text-blue-600 sm:flex-none"
+                  onClick={startCameraScanner}
+                >
+                  📷 Camera Scan
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  className="h-12 flex-1 px-4 sm:flex-none"
+                  onClick={stopCamera}
+                >
+                  ✕ Close Camera
+                </Button>
+              )}
+            </div>
           </div>
 
           {cameraOpen && (
@@ -956,14 +977,14 @@ export default function CheckoutPage() {
                 muted
               />
               <p className="text-xs text-white">
-                QR یا Barcode کیمرے کے سامنے رکھیں — خود بخود اسکین ہو جائے گا
+                QR یا Barcode کیمرے کے سامنے رکھیں — خود بخود سکین ہو جائے گا
               </p>
             </div>
           )}
 
           <form
             onSubmit={handleAddAndSave}
-            className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4"
+            className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-4"
           >
             <div className="flex gap-2">
               <Input
