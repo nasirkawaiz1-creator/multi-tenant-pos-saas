@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@pos/ui";
 
 export interface QuickItemEntry {
@@ -115,7 +115,7 @@ export function SimpleQrAndMicScanner({ onAddItem }: Props) {
     }
   }
 
-  function handleAdd(e?: React.FormEvent) {
+  function handleAdd(e?: FormEvent) {
     if (e) e.preventDefault();
 
     const cleanCode = qrCode.trim();
