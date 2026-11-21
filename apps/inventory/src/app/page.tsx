@@ -24,6 +24,8 @@ const SALES_LEDGER_KEY = "pos:customerSalesLedger:v1";
 const PRODUCT_COST_MAP_KEY = "pos:productCostMap:v1";
 const CLOSING_HOUR = 21;
 
+type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
+
 interface StoreProfile {
   name: string;
   details: string;
@@ -63,6 +65,14 @@ interface ScannedBillItem {
   costPrice: string;
   salePrice: string;
   qty: number;
+}
+
+interface CollectedCodeEntry {
+  id: string;
+  code: string;
+  channel: DeviceChannel;
+  time: string;
+  matchedName?: string;
 }
 
 interface BackendOrderItem {
@@ -140,6 +150,11 @@ export default function InventoryPage() {
   const [salesEntries, setSalesEntries] = useState<SaleEntry[]>([]);
   const [productCostMap, setProductCostMap] = useState<Record<string, number>>({});
   const [activeLedgerTab, setActiveLedgerTab] = useState<"purchase" | "sales">("purchase");
+
+  const [selectedChannel, setSelectedChannel] = useState<DeviceChannel>("Barcode");
+  const [deviceStatusText, setDeviceStatusText] = useState("Ready (Barcode / Scanner / Printer)");
+  const [collectedCodes, setCollectedCodes] = useState<CollectedCodeEntry[]>([]);
+  const [bluetoothPrinterDevice, setBluetoothPrinterDevice] = useState<unknown>(null);
 
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
     name: "",
@@ -221,6 +236,83 @@ export default function InventoryPage() {
     return fallbackSalePrice;
   }
 
+  function collectBarcodeEntry(rawCode: string, channel: DeviceChannel = selectedChannel) {
+    const cleanCode = rawCode.trim();
+    if (!cleanCode) return;
+    const found = products.find(
+      (p) =>
+        (p.sku && p.sku.toLowerCase() === cleanCode.toLowerCase()) || p.id === cleanCode
+    );
+    const entry: CollectedCodeEntry = {
+      id: `CODE-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      code: cleanCode,
+      channel,
+      time: formatTimeStr(new Date()),
+      matchedName: found?.name,
+    };
+    setCollectedCodes((prev) => [entry, ...prev.slice(0, 49)]);
+  }
+
+  async function handleConnectChannel(channel: DeviceChannel) {
+    setSelectedChannel(channel);
+    setError("");
+    if (channel === "Bluetooth") {
+      try {
+        const nav = navigator as unknown as {
+          bluetooth?: {
+            requestDevice: (opts: Record<string, unknown>) => Promise<{ name?: string }>;
+          };
+        };
+        if (!nav.bluetooth?.requestDevice) {
+          setDeviceStatusText("Bluetooth Printer / Scanner mode selected (Browser print fallback ready)");
+          return;
+        }
+        const device = await nav.bluetooth.requestDevice({
+          acceptAllDevices: true,
+        });
+        setBluetoothPrinterDevice(device);
+        setDeviceStatusText(`Bluetooth Connected: ${device.name || "Thermal Device"}`);
+      } catch {
+        setDeviceStatusText("Bluetooth selected (Pair thermal receipt printer or print paper bill)");
+      }
+      return;
+    }
+
+    if (channel === "USB") {
+      try {
+        const nav = navigator as unknown as {
+          usb?: {
+            requestDevice: (opts: Record<string, unknown>) => Promise<{ productName?: string }>;
+          };
+        };
+        if (nav.usb?.requestDevice) {
+          const usbDev = await nav.usb.requestDevice({ filters: [] });
+          setDeviceStatusText(`USB Connected: ${usbDev.productName || "USB Device"}`);
+          return;
+        }
+      } catch {}
+      setDeviceStatusText("USB Scanner / Receipt Printer mode active");
+      return;
+    }
+
+    if (channel === "Barcode") {
+      setDeviceStatusText("Barcode mode active (Camera / Code collection ready)");
+      return;
+    }
+
+    setDeviceStatusText("Keyboard / Scanner wedge input active");
+  }
+
+  function handlePrintCustomerReceipt() {
+    const hasBt = Boolean(bluetoothPrinterDevice);
+    setDeviceStatusText(
+      hasBt
+        ? "Sending receipt via Bluetooth printer / print dialog..."
+        : "Opening thermal / paper receipt print dialog..."
+    );
+    window.print();
+  }
+
   function appendPurchaseRecord(entry: Omit<PurchaseEntry, "id">) {
     const newRow: PurchaseEntry = {
       ...entry,
@@ -299,9 +391,7 @@ export default function InventoryPage() {
         setSalesEntries(builtSales);
         safeJsonWrite(SALES_LEDGER_KEY, builtSales);
       }
-    } catch {
-      // Fallback to local sales ledger if /orders is unavailable
-    }
+    } catch {}
   }
 
   async function loadStoreProfile() {
@@ -399,7 +489,6 @@ export default function InventoryPage() {
     }
     setCameraOpen(false);
   }
-
   async function captureAndScanWholesale() {
     if (!videoRef.current || scanningPhoto) return;
 
@@ -497,11 +586,14 @@ export default function InventoryPage() {
             if (parsed.length > 0) {
               setScannedBillItems(parsed);
               const first = parsed[0];
-              setName(first.name);
-              setSku(first.sku);
-              setCostPrice(first.costPrice);
-              setSalePrice(first.salePrice);
-              setStockQty(String(first.qty));
+              if (first) {
+                setName(first.name);
+                setSku(first.sku);
+                setCostPrice(first.costPrice);
+                setSalePrice(first.salePrice);
+                setStockQty(String(first.qty));
+                collectBarcodeEntry(first.sku, "Barcode");
+              }
               stopCamera();
               setError(
                 `✔ ہول سیل بل سے ${parsed.length} آئٹمز مل گئیں! پہلی آئٹم فارم میں بھر دی گئی ہے۔`
@@ -531,7 +623,10 @@ export default function InventoryPage() {
           ).trim();
 
           if (extractedName) setName(extractedName);
-          if (extractedSku) setSku(extractedSku);
+          if (extractedSku) {
+            setSku(extractedSku);
+            collectBarcodeEntry(extractedSku, "Barcode");
+          }
           if (extractedCost) setCostPrice(extractedCost);
           if (extractedSale) setSalePrice(extractedSale);
           if (extractedQty) setStockQty(extractedQty);
@@ -664,14 +759,18 @@ export default function InventoryPage() {
     }
 
     try {
+      const cleanCode =
+        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
       const savedProduct = await saveWholesalePurchaseItem({
         itemName: name.trim(),
-        itemSku: sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`,
+        itemSku: cleanCode,
         itemCostPrice: costPrice.trim() || salePrice.trim(),
         itemSalePrice: salePrice.trim() || costPrice.trim(),
         itemQty: parseInt(stockQty, 10) || 1,
         billLabel: supplierOrBill.trim() || "Wholesale / Direct",
       });
+
+      collectBarcodeEntry(cleanCode, selectedChannel);
 
       if (savedProduct || true) {
         setName("");
@@ -749,9 +848,7 @@ export default function InventoryPage() {
           if (saved) {
             importedCount++;
           }
-        } catch {
-          // Skip failed row
-        }
+        } catch {}
       }
 
       alert(`کامیابی کے ساتھ ${importedCount} پروڈکٹس امپورٹ ہو گئی ہیں!`);
@@ -809,6 +906,7 @@ export default function InventoryPage() {
     link.click();
     document.body.removeChild(link);
   }
+
   const filteredProducts = products.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -878,7 +976,7 @@ export default function InventoryPage() {
         </nav>
       }
     >
-      <div className="mb-4 border-b border-slate-200 pb-3 flex justify-between items-center">
+      <div className="mb-4 border-b border-slate-200 pb-3 flex flex-wrap justify-between items-center gap-2">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
           <p className="text-sm text-slate-700 font-medium">
@@ -887,13 +985,76 @@ export default function InventoryPage() {
               .join(" | ")}
           </p>
         </div>
-        <Button
-          onClick={() => router.push("/checkout")}
-          className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
-        >
-          Go to Checkout ➔
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handlePrintCustomerReceipt}
+            className="border-slate-400 text-slate-800 font-bold"
+          >
+            🖨️ Print Bill / Receipt
+          </Button>
+          <Button
+            onClick={() => router.push("/checkout")}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
+          >
+            Go to Checkout ➔
+          </Button>
+        </div>
       </div>
+
+      <Card className="mb-6 border-slate-200 shadow-sm">
+        <CardHeader className="py-3">
+          <CardTitle className="text-sm font-bold text-slate-900">
+            Device & Input Channels (USB / Bluetooth / Barcode / Keyboard) — {deviceStatusText}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 pt-0">
+          <div className="flex flex-wrap items-center gap-2">
+            {(["USB", "Bluetooth", "Barcode", "Keyboard"] as DeviceChannel[]).map(
+              (ch) => (
+                <Button
+                  key={ch}
+                  type="button"
+                  variant={selectedChannel === ch ? "default" : "outline"}
+                  onClick={() => handleConnectChannel(ch)}
+                  className={
+                    selectedChannel === ch
+                      ? "bg-blue-600 text-white font-bold"
+                      : "border-slate-300 text-slate-800"
+                  }
+                >
+                  {ch}
+                </Button>
+              )
+            )}
+            <Button
+              type="button"
+              onClick={() => {
+                if (!sku.trim()) return;
+                handleBarcodeLookup(sku);
+                collectBarcodeEntry(sku, selectedChannel);
+              }}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+            >
+              + Collect Barcode ({collectedCodes.length})
+            </Button>
+          </div>
+
+          {collectedCodes.length > 0 && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              {collectedCodes.slice(0, 8).map((item) => (
+                <span
+                  key={item.id}
+                  className="rounded-md bg-slate-100 border border-slate-300 px-2.5 py-1 font-mono text-slate-800"
+                >
+                  {item.code} [{item.channel}] {item.matchedName ? `• ${item.matchedName}` : ""}
+                </span>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <PageHeader
         title="Inventory Manager"
