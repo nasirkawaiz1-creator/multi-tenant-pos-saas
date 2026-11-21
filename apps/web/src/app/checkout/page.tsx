@@ -73,6 +73,9 @@ export default function CheckoutPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [receipt, setReceipt] = useState<Order | null>(null);
   const [receiptDate, setReceiptDate] = useState<string>(getTodayDateKey());
+  const [receiptSubtotal, setReceiptSubtotal] = useState<number>(0);
+  const [receiptDiscount, setReceiptDiscount] = useState<number>(0);
+  const [receiptGrandTotal, setReceiptGrandTotal] = useState<number>(0);
   const [processing, setProcessing] = useState(false);
   const [scanningPhoto, setScanningPhoto] = useState(false);
   const [error, setError] = useState("");
@@ -426,6 +429,9 @@ export default function CheckoutPage() {
 
     const activeDate = getTodayDateKey();
     const activeScope = storeInfo.slug || storeInfo.name || invoiceScope;
+    const finalSubtotal = Math.round(subtotal * 100) / 100;
+    const finalDiscount = Math.round(discountVal * 100) / 100;
+    const finalTotal = total;
 
     try {
       const order = await apiFetch<Order>("/orders", {
@@ -436,7 +442,7 @@ export default function CheckoutPage() {
             quantity: item.quantity,
             unitPrice: item.product.price,
           })),
-          discount: discountVal,
+          discount: finalDiscount,
           invoiceDate: activeDate,
         }),
       });
@@ -456,7 +462,17 @@ export default function CheckoutPage() {
       invoiceScope = activeScope;
       setCurrentDateKey(activeDate);
       setReceiptDate(activeDate);
-      setReceipt({ ...order, id: issuedInvoice } as Order);
+      setReceiptSubtotal(finalSubtotal);
+      setReceiptDiscount(finalDiscount);
+      setReceiptGrandTotal(finalTotal);
+      setReceipt({
+        ...order,
+        id: issuedInvoice,
+        subtotal:
+          order?.subtotal !== undefined && Number(order.subtotal) > 0
+            ? order.subtotal
+            : finalSubtotal.toFixed(2),
+      } as Order);
       setCart([]);
       setInvoiceNo(nextInvoiceFormatted);
       await loadProducts();
@@ -481,6 +497,11 @@ export default function CheckoutPage() {
       }) - Rs ${(parseFloat(item.unitPrice) * item.quantity).toFixed(2)}\n`;
     });
 
+    const displaySubtotal =
+      receiptSubtotal > 0
+        ? receiptSubtotal.toFixed(2)
+        : String(receipt.subtotal ?? "0.00");
+
     const message =
       `*${storeInfo.name}*\n` +
       `${storeInfo.details}\n` +
@@ -490,9 +511,11 @@ export default function CheckoutPage() {
       `*Bill #${receipt.id}* (Attendant: ${attendantName})\n\n` +
       `${itemsText}\n` +
       `--------------------------------\n` +
-      `Subtotal: Rs ${receipt.subtotal}\n` +
-      (discountVal > 0 ? `Discount: -Rs ${discountVal}\n` : "") +
-      `*Grand Total: Rs ${total}*\n` +
+      `Subtotal: Rs ${displaySubtotal}\n` +
+      (receiptDiscount > 0
+        ? `Discount: -Rs ${receiptDiscount.toFixed(2)}\n`
+        : "") +
+      `*Grand Total: Rs ${receiptGrandTotal.toFixed(2)}*\n` +
       `--------------------------------\n` +
       `Thank you for shopping with us! (Admin: ${storeInfo.phone})`;
 
@@ -508,6 +531,11 @@ export default function CheckoutPage() {
   }
 
   if (receipt) {
+    const displaySubtotal =
+      receiptSubtotal > 0
+        ? receiptSubtotal.toFixed(2)
+        : String(receipt.subtotal ?? "0.00");
+
     return (
       <AppShell title="Checkout">
         <div className="mx-auto max-w-md space-y-4">
@@ -546,17 +574,19 @@ export default function CheckoutPage() {
               <div className="space-y-1 border-t border-slate-200 pt-4 text-sm">
                 <div className="flex justify-between">
                   <span>Subtotal</span>
-                  <span>Rs {receipt.subtotal}</span>
+                  <span>Rs {displaySubtotal}</span>
                 </div>
-                {discountVal > 0 && (
+                {receiptDiscount > 0 && (
                   <div className="flex justify-between text-green-600 font-medium">
                     <span>Discount</span>
-                    <span>-Rs {discountVal}</span>
+                    <span>-Rs {receiptDiscount.toFixed(2)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-lg font-bold">
                   <span>Grand Total</span>
-                  <span className="text-blue-600">Rs {total}</span>
+                  <span className="text-blue-600">
+                    Rs {receiptGrandTotal.toFixed(2)}
+                  </span>
                 </div>
               </div>
 
@@ -586,6 +616,9 @@ export default function CheckoutPage() {
                 onClick={() => {
                   setReceipt(null);
                   setDiscountAmount("");
+                  setReceiptSubtotal(0);
+                  setReceiptDiscount(0);
+                  setReceiptGrandTotal(0);
                 }}
               >
                 New Sale
