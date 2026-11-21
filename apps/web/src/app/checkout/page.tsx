@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useRouter } from "next/navigation";
 import { apiFetch, getToken } from "@pos/api-client";
 import type { Order, Product } from "@pos/types";
 import {
@@ -16,9 +15,6 @@ import {
   PageHeader,
 } from "@pos/ui";
 
-const N8N_PRODUCT_SCAN_WEBHOOK_URL =
-  "https://primary-production-34a63.up.railway.app/webhook/store-onboarding";
-
 interface CartItem {
   product: Product;
   quantity: number;
@@ -30,6 +26,31 @@ interface StoreProfile {
   details: string;
   phone: string;
 }
+
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  0: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionEventLike {
+  results: ArrayLike<SpeechRecognitionResultLike>;
+}
+
+interface SpeechRecognitionLike {
+  lang: string;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 let invoiceScope = "unscoped";
 const INVOICE_SEED = 1;
@@ -62,7 +83,6 @@ function readNextInvoice(scope: string = invoiceScope): number {
 }
 
 export default function CheckoutPage() {
-  const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
   const [barcodeInput, setBarcodeInput] = useState("");
   const [itemNameInput, setItemNameInput] = useState("");
@@ -77,16 +97,19 @@ export default function CheckoutPage() {
   const [receiptDiscount, setReceiptDiscount] = useState<number>(0);
   const [receiptGrandTotal, setReceiptGrandTotal] = useState<number>(0);
   const [processing, setProcessing] = useState(false);
-  const [scanningPhoto, setScanningPhoto] = useState(false);
   const [error, setError] = useState("");
   const [currentDateKey, setCurrentDateKey] = useState<string>(getTodayDateKey());
   const [invoiceNo, setInvoiceNo] = useState(formatInvoiceNumber(INVOICE_SEED));
   const [attendantName, setAttendantName] = useState("Nasir Farooq");
 
+  const [micListening, setMicListening] = useState(false);
+  const [micLang, setMicLang] = useState<"ur-PK" | "en-US">("ur-PK");
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scanIntervalRef = useRef<number | null>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
@@ -124,6 +147,9 @@ export default function CheckoutPage() {
   useEffect(() => {
     return () => {
       stopCamera();
+      try {
+        recognitionRef.current?.stop();
+      } catch {}
     };
   }, []);
 
@@ -155,27 +181,11 @@ export default function CheckoutPage() {
     }
   }
 
-  async function startCameraScanner() {
-    setError("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      });
-      streamRef.current = stream;
-      setCameraOpen(true);
-
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
-      }, 200);
-    } catch {
-      setError("Camera access denied or not supported on this browser.");
-    }
-  }
-
   function stopCamera() {
+    if (scanIntervalRef.current !== null) {
+      window.clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -183,90 +193,125 @@ export default function CheckoutPage() {
     setCameraOpen(false);
   }
 
-  async function captureAndScanProductPhoto() {
-    if (!videoRef.current || scanningPhoto) return;
+  async function startCameraScanner() {
+    setError("");
+    stopCamera();
 
-    const video = videoRef.current;
-    const canvas = canvasRef.current || document.createElement("canvas");
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setCameraOpen(true);
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    setScanningPhoto(true);
-    setError("📷 تصویر n8n کو بھیجی جا رہی ہے...");
-
-    canvas.toBlob(
-      async (blob) => {
-        if (!blob) {
-          setScanningPhoto(false);
-          setError("❌ تصویر کیپچر نہیں ہو سکی، دوبارہ کوشش کریں۔");
-          return;
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(() => {});
         }
+      }, 100);
 
-        try {
-          const formData = new FormData();
-          formData.append("image", blob, "product-scan.jpg");
-          formData.append("scan_type", "product");
-          formData.append("token", getToken() ?? "");
+      const win = window as unknown as {
+        BarcodeDetector?: new (opts?: { formats?: string[] }) => {
+          detect: (
+            source: HTMLVideoElement
+          ) => Promise<Array<{ rawValue?: string }>>;
+        };
+      };
 
-          const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
-            method: "POST",
-            body: formData,
-          });
+      if (win.BarcodeDetector) {
+        const detector = new win.BarcodeDetector({
+          formats: [
+            "qr_code",
+            "ean_13",
+            "ean_8",
+            "code_128",
+            "code_39",
+            "upc_a",
+            "upc_e",
+          ],
+        });
 
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-
-          const raw = await res.json();
-          const payload = Array.isArray(raw) ? raw[0] : raw;
-
-          const extractedName = String(
-            payload?.product_name ?? payload?.name ?? ""
-          ).trim();
-          const extractedBarcode = String(
-            payload?.barcode ?? payload?.sku ?? ""
-          ).trim();
-
-          if (extractedName) {
-            setItemNameInput(extractedName);
-          }
-          if (extractedBarcode) {
-            setBarcodeInput(extractedBarcode);
-            const matched = products.find(
-              (p) =>
-                (p.sku &&
-                  p.sku.toLowerCase() === extractedBarcode.toLowerCase()) ||
-                p.id === extractedBarcode
-            );
-            if (matched?.price && !priceInput) {
-              setPriceInput(matched.price);
+        scanIntervalRef.current = window.setInterval(async () => {
+          if (!videoRef.current || videoRef.current.readyState < 2) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes.length > 0 && codes[0]?.rawValue) {
+              const detected = codes[0].rawValue.trim();
+              if (detected) {
+                stopCamera();
+                handleBarcodeScanned(detected);
+              }
             }
-          }
+          } catch {}
+        }, 200);
+      } else {
+        setError(
+          "⚡ لائیو کیمرہ کھلا ہے — کوڈ اسکین کریں یا نیچے QR/Barcode باکس و مائیک استعمال کریں۔"
+        );
+      }
+    } catch {
+      setError("Camera access denied or not supported on this browser.");
+    }
+  }
 
-          stopCamera();
-          setError(
-            `✔ اسکین مکمل: ${extractedName || "نام نہیں ملا"} | بار کوڈ: ${
-              extractedBarcode || "نہیں ملا"
-            }`
-          );
-        } catch (err) {
-          console.error("n8n product scan failed:", err);
-          setError(
-            `❌ n8n سے جواب نہیں آیا (${
-              err instanceof Error ? err.message : "نامعلوم"
-            })، ویب ہک یا انٹرنیٹ چیک کریں۔`
-          );
-        } finally {
-          setScanningPhoto(false);
-        }
-      },
-      "image/jpeg",
-      0.85
+  function toggleMic() {
+    if (micListening) {
+      try {
+        recognitionRef.current?.stop();
+      } catch {}
+      setMicListening(false);
+      return;
+    }
+
+    const win = window as unknown as {
+      SpeechRecognition?: SpeechRecognitionCtor;
+      webkitSpeechRecognition?: SpeechRecognitionCtor;
+    };
+    const SpeechRec = win.SpeechRecognition || win.webkitSpeechRecognition;
+
+    if (!SpeechRec) {
+      setError("اس براؤزر میں مائیک سپورٹ نہیں ہے؛ براہِ راست ٹائپ کریں۔");
+      return;
+    }
+
+    const rec = new SpeechRec();
+    rec.lang = micLang;
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+
+    rec.onresult = (event: SpeechRecognitionEventLike) => {
+      const spoken = event.results?.[0]?.[0]?.transcript?.trim() || "";
+      if (spoken) {
+        setItemNameInput((prev) => (prev ? `${prev} ${spoken}`.trim() : spoken));
+        setError(`🎤 مائیک سے لکھا گیا: "${spoken}"`);
+      }
+    };
+
+    rec.onerror = () => {
+      setMicListening(false);
+      setError("مائیک سننے میں مسئلہ آیا، دوبارہ کوشش کریں۔");
+    };
+
+    rec.onend = () => {
+      setMicListening(false);
+    };
+
+    recognitionRef.current = rec;
+    setMicListening(true);
+    setError(
+      micLang === "ur-PK"
+        ? "🎤 مائیک آن ہے — آئٹم کا نام بولیں..."
+        : "🎤 Mic on — speak item name..."
     );
+
+    try {
+      rec.start();
+    } catch {
+      setMicListening(false);
+      setError("مائیک شروع نہیں ہو سکا۔");
+    }
   }
 
   function handleBarcodeScanned(code: string) {
@@ -284,6 +329,8 @@ export default function CheckoutPage() {
       setItemNameInput(found.name);
       setPriceInput(found.price || "");
       setError(`⚡ Auto-matched: ${found.name}`);
+    } else {
+      setError(`⚡ Code "${trimmed}" ready — نام بولیں یا لکھیں اور Add & Save کریں۔`);
     }
   }
 
@@ -667,7 +714,7 @@ export default function CheckoutPage() {
 
       <PageHeader
         title={`Checkout Terminal (Bill #${invoiceNo} • ${currentDateKey})`}
-        description="Scan Barcode (Auto-Fills Name & Saves to Inventory) 📦"
+        description="Instant QR / Barcode + Voice Mic Entry (No n8n Delay) ⚡"
       />
 
       <div className="grid gap-6 lg:grid-cols-3">
@@ -717,20 +764,9 @@ export default function CheckoutPage() {
                 playsInline
                 muted
               />
-              <canvas ref={canvasRef} className="hidden" />
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-white text-xs">
-                  Point camera at product name & barcode, then tap Capture
-                </p>
-                <Button
-                  type="button"
-                  onClick={captureAndScanProductPhoto}
-                  disabled={scanningPhoto}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
-                >
-                  {scanningPhoto ? "Scanning..." : "📸 Capture Product Photo"}
-                </Button>
-              </div>
+              <p className="text-white text-xs">
+                QR یا Barcode کیمرے کے سامنے رکھیں — خود بخود اسکین ہو جائے گا
+              </p>
             </div>
           )}
 
@@ -738,14 +774,37 @@ export default function CheckoutPage() {
             onSubmit={handleAddAndSave}
             className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50"
           >
-            <div>
+            <div className="flex gap-2">
               <Input
-                placeholder="Item Name (Auto-fills on scan)..."
+                placeholder="Item Name (Voice / Copy / Auto-fills on scan)..."
                 value={itemNameInput}
                 onChange={(e) => setItemNameInput(e.target.value)}
-                className="h-12 text-base bg-white font-medium"
+                className="h-12 text-base bg-white font-medium flex-1"
                 required
               />
+              <Button
+                type="button"
+                variant="outline"
+                className="h-12 px-3 text-xs font-semibold border-slate-300 text-slate-700"
+                onClick={() =>
+                  setMicLang((prev) => (prev === "ur-PK" ? "en-US" : "ur-PK"))
+                }
+              >
+                {micLang === "ur-PK" ? "UR" : "EN"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={toggleMic}
+                aria-label="Voice Mic"
+                className={
+                  micListening
+                    ? "h-12 px-4 border-red-500 bg-red-50 text-red-700 font-bold"
+                    : "h-12 px-4 border-slate-300 text-slate-700"
+                }
+              >
+                {micListening ? "⏹" : "🎤"}
+              </Button>
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -799,7 +858,7 @@ export default function CheckoutPage() {
                       colSpan={5}
                       className="px-4 py-8 text-center text-slate-400"
                     >
-                      Scan barcode or capture product photo to add instantly...
+                      Scan QR / barcode or use voice mic to add items instantly...
                     </td>
                   </tr>
                 ) : (
