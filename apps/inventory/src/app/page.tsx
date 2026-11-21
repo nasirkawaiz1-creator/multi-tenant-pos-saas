@@ -1664,7 +1664,7 @@ const filteredProducts = products.filter((p) => {
                       </td>
                       <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
                       <td className="py-2">
-                        <Badge variant={day.isClosed ? "secondary" : "success"}>
+                       <Badge variant={day.isClosed ? "default" : "success"}>
                           {day.isClosed ? "Closed" : "Open"}
                         </Badge>
                       </td>
