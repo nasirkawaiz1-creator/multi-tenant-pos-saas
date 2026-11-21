@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button, Card, CardContent, CardHeader, CardTitle, Input } from "@pos/ui";
 
+export interface CatalogLookupItem {
+  code: string;
+  name: string;
+  price?: number;
+}
+
 export interface QuickItemEntry {
   id: string;
   qrOrCode: string;
@@ -37,10 +43,11 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 interface Props {
+  catalog?: CatalogLookupItem[];
   onAddItem?: (item: QuickItemEntry) => void;
 }
 
-export function SimpleQrAndMicScanner({ onAddItem }: Props) {
+export function SimpleQrAndMicScanner({ catalog = [], onAddItem }: Props) {
   const [qrCode, setQrCode] = useState("");
   const [itemText, setItemText] = useState("");
   const [qty, setQty] = useState<number>(1);
@@ -60,6 +67,24 @@ export function SimpleQrAndMicScanner({ onAddItem }: Props) {
       } catch {}
     };
   }, []);
+
+  function findProductByCode(codeValue: string): CatalogLookupItem | undefined {
+    const normalized = codeValue.trim().toLowerCase();
+    if (!normalized) return undefined;
+    return catalog.find((item) => item.code.trim().toLowerCase() === normalized);
+  }
+
+  function handleQrChange(value: string) {
+    setQrCode(value);
+    const matched = findProductByCode(value);
+    if (matched) {
+      setItemText(matched.name);
+      if (typeof matched.price === "number" && !Number.isNaN(matched.price)) {
+        setPrice(String(matched.price));
+      }
+      setStatus(`QR/Code میچ ہو گیا: ${matched.name}`);
+    }
+  }
 
   function toggleMic() {
     if (listening) {
@@ -119,7 +144,14 @@ export function SimpleQrAndMicScanner({ onAddItem }: Props) {
     if (e) e.preventDefault();
 
     const cleanCode = qrCode.trim();
-    const cleanName = itemText.trim() || cleanCode;
+    const matched = findProductByCode(cleanCode);
+    const cleanName = itemText.trim() || matched?.name || cleanCode;
+    const finalPrice =
+      price.trim() !== ""
+        ? Number(price) || 0
+        : typeof matched?.price === "number"
+          ? matched.price
+          : 0;
 
     if (!cleanCode && !cleanName) {
       setStatus("QR کوڈ درج کریں یا مائیک/ٹیکسٹ سے آئٹم کا نام لکھیں۔");
@@ -131,7 +163,7 @@ export function SimpleQrAndMicScanner({ onAddItem }: Props) {
       qrOrCode: cleanCode,
       spokenOrName: cleanName,
       qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
-      price: Number(price) || 0,
+      price: finalPrice,
     };
 
     setRecentItems((prev) => [newEntry, ...prev]);
@@ -170,15 +202,15 @@ export function SimpleQrAndMicScanner({ onAddItem }: Props) {
         <form onSubmit={handleAdd} className="space-y-3">
           <Input
             ref={qrInputRef}
-            placeholder="QR Code / Item Code (Enter to add)"
+            placeholder="QR Code / Item Code (Scan or type code)"
             value={qrCode}
-            onChange={(e) => setQrCode(e.target.value)}
+            onChange={(e) => handleQrChange(e.target.value)}
             autoFocus
           />
 
           <div className="flex gap-2">
             <Input
-              placeholder="Item Name (Copy item / Voice text)"
+              placeholder="Item Name (Auto from QR or Voice / Copy item)"
               value={itemText}
               onChange={(e) => setItemText(e.target.value)}
             />
