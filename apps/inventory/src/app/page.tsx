@@ -126,7 +126,6 @@ export default function InventoryPage() {
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Add / Wholesale Entry Form State
   const [supplierOrBill, setSupplierOrBill] = useState("");
   const [sku, setSku] = useState("");
   const [name, setName] = useState("");
@@ -134,21 +133,13 @@ export default function InventoryPage() {
   const [salePrice, setSalePrice] = useState("");
   const [stockQty, setStockQty] = useState("100");
 
-  // Scan State
   const [scanningPhoto, setScanningPhoto] = useState(false);
-  const [scannedBillItems, setScannedBillItems] = useState<ScannedBillItem[]>(
-    []
-  );
+  const [scannedBillItems, setScannedBillItems] = useState<ScannedBillItem[]>([]);
 
-  // Separate Ledgers State
   const [purchaseEntries, setPurchaseEntries] = useState<PurchaseEntry[]>([]);
   const [salesEntries, setSalesEntries] = useState<SaleEntry[]>([]);
-  const [productCostMap, setProductCostMap] = useState<Record<string, number>>(
-    {}
-  );
-  const [activeLedgerTab, setActiveLedgerTab] = useState<"purchase" | "sales">(
-    "purchase"
-  );
+  const [productCostMap, setProductCostMap] = useState<Record<string, number>>({});
+  const [activeLedgerTab, setActiveLedgerTab] = useState<"purchase" | "sales">("purchase");
 
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
     name: "",
@@ -159,7 +150,6 @@ export default function InventoryPage() {
   const [todayDate, setTodayDate] = useState<string>(getTodayDateStr());
   const [currentHour, setCurrentHour] = useState<number>(new Date().getHours());
 
-  // Camera Scanner Ref
   const [cameraOpen, setCameraOpen] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -171,15 +161,9 @@ export default function InventoryPage() {
       return;
     }
 
-    const savedPurchases = safeJsonRead<PurchaseEntry[]>(
-      PURCHASE_LEDGER_KEY,
-      []
-    );
+    const savedPurchases = safeJsonRead<PurchaseEntry[]>(PURCHASE_LEDGER_KEY, []);
     const savedSales = safeJsonRead<SaleEntry[]>(SALES_LEDGER_KEY, []);
-    const savedCostMap = safeJsonRead<Record<string, number>>(
-      PRODUCT_COST_MAP_KEY,
-      {}
-    );
+    const savedCostMap = safeJsonRead<Record<string, number>>(PRODUCT_COST_MAP_KEY, {});
 
     setPurchaseEntries(savedPurchases);
     setSalesEntries(savedSales);
@@ -229,10 +213,7 @@ export default function InventoryPage() {
     if (productId && costMapArg[`id:${productId}`] !== undefined) {
       return costMapArg[`id:${productId}`];
     }
-    if (
-      productSku &&
-      costMapArg[`sku:${productSku.toLowerCase()}`] !== undefined
-    ) {
+    if (productSku && costMapArg[`sku:${productSku.toLowerCase()}`] !== undefined) {
       return costMapArg[`sku:${productSku.toLowerCase()}`];
     }
     return fallbackSalePrice;
@@ -252,9 +233,7 @@ export default function InventoryPage() {
 
   async function syncSalesFromOrders(costMapArg: Record<string, number>) {
     try {
-      const res = await apiFetch<{ data?: BackendOrder[] } | BackendOrder[]>(
-        "/orders"
-      );
+      const res = await apiFetch<{ data?: BackendOrder[] } | BackendOrder[]>("/orders");
       const orderList: BackendOrder[] = Array.isArray(res)
         ? res
         : Array.isArray(res?.data)
@@ -277,12 +256,7 @@ export default function InventoryPage() {
           ord.items.forEach((it, idx) => {
             const qty = Number(it.quantity || 1);
             const uPrice = Number(it.unitPrice || 0);
-            const uCost = lookupUnitCost(
-              it.productId,
-              undefined,
-              uPrice,
-              costMapArg
-            );
+            const uCost = lookupUnitCost(it.productId, undefined, uPrice, costMapArg);
             const lineSale = Math.round(uPrice * qty * 100) / 100;
             const lineCost = Math.round(uCost * qty * 100) / 100;
             const lineProfit = Math.round((lineSale - lineCost) * 100) / 100;
@@ -337,15 +311,11 @@ export default function InventoryPage() {
     }
   }
 
-  async function loadProducts(
-    costMapArg: Record<string, number> = productCostMap
-  ) {
+  async function loadProducts(costMapArg: Record<string, number> = productCostMap) {
     setLoading(true);
     setError("");
     try {
-      const res = await apiFetch<{ data: Product[] }>(
-        `/products?t=${Date.now()}`
-      );
+      const res = await apiFetch<{ data: Product[] }>(`/products?t=${Date.now()}`);
       if (res && res.data) {
         setProducts(res.data);
         res.data.forEach((p) => {
@@ -367,9 +337,7 @@ export default function InventoryPage() {
       }
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load products from server."
+        err instanceof Error ? err.message : "Failed to load products from server."
       );
       setProducts([]);
     } finally {
@@ -384,8 +352,7 @@ export default function InventoryPage() {
 
     const found = products.find(
       (p) =>
-        (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase()) ||
-        p.id === trimmed
+        (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase()) || p.id === trimmed
     );
 
     if (found) {
@@ -501,10 +468,7 @@ export default function InventoryPage() {
                     "0"
                 ).trim();
                 const sVal = String(
-                  it?.sale_price ??
-                    it?.retail_price ??
-                    it?.price ??
-                    cVal
+                  it?.sale_price ?? it?.retail_price ?? it?.price ?? cVal
                 ).trim();
 
                 return {
@@ -558,10 +522,7 @@ export default function InventoryPage() {
               ""
           ).trim();
           const extractedSale = String(
-            payload?.sale_price ??
-              payload?.retail_price ??
-              payload?.price ??
-              ""
+            payload?.sale_price ?? payload?.retail_price ?? payload?.price ?? ""
           ).trim();
           const extractedQty = String(
             payload?.qty ?? payload?.quantity ?? payload?.stockQty ?? ""
@@ -604,8 +565,7 @@ export default function InventoryPage() {
     billLabel?: string;
   }): Promise<Product | null> {
     const cleanSku =
-      params.itemSku.trim() ||
-      `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+      params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
     const parsedCost = parseFloat(params.itemCostPrice.trim() || "0") || 0;
     const parsedSale =
       parseFloat(
@@ -862,373 +822,4 @@ export default function InventoryPage() {
     0
   );
 
-  const todaySales = salesEntries.filter((e) => e.date === todayDate);
-  const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
-  const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
-  const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
-  const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
-
-  const allDates = Array.from(
-    new Set([
-      ...purchaseEntries.map((p) => p.date),
-      ...salesEntries.map((s) => s.date),
-      todayDate,
-    ])
-  ).sort((a, b) => b.localeCompare(a));
-
-  const dateClosingSummary = allDates.map((d) => {
-    const pRows = purchaseEntries.filter((p) => p.date === d);
-    const sRows = salesEntries.filter((s) => s.date === d);
-    const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
-    const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
-    const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
-    const sQty = sRows.reduce((acc, r) => acc + r.qty, 0);
-    const profitTotal = sRows.reduce((acc, r) => acc + r.profit, 0);
-    const isClosed =
-      d < todayDate || (d === todayDate && currentHour >= CLOSING_HOUR);
-
-    return {
-      date: d,
-      pQty,
-      pTotal,
-      sQty,
-      sTotal,
-      profitTotal,
-      isClosed,
-    };
-  });
-
-  const isEveningClosingWindow = currentHour >= CLOSING_HOUR;
-
-  return (
-    <AppShell
-      title="Inventory"
-      nav={
-        <nav className="flex gap-4 text-sm">
-          <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
-            Dashboard
-          </a>
-          <a href="/inventory" className="font-medium text-slate-900">
-            Inventory
-          </a>
-          <a href="/checkout" className="text-slate-600 hover:text-slate-900">
-            Checkout
-          </a>
-        </nav>
-      }
-    >
-      <div className="mb-4 border-b border-slate-200 pb-3 flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
-          <p className="text-sm text-slate-700 font-medium">
-            {[storeInfo.details, storeInfo.phone ? `Ph: ${storeInfo.phone}` : ""]
-              .filter(Boolean)
-              .join(" | ")}
-          </p>
-        </div>
-        <Button
-          onClick={() => router.push("/checkout")}
-          className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
-        >
-          Go to Checkout ➔
-        </Button>
-      </div>
-
-      <PageHeader
-        title="Inventory Manager"
-        description="Separate ledgers for wholesale/manufacturer purchases, customer sales, cost prices, and profit"
-      />
-
-      <div className="bg-slate-50 border border-dashed border-slate-300 p-4 rounded-xl mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <label className="font-bold block mb-1 text-slate-800 text-sm">
-            📁 پرانا ڈیٹا یا کسٹمر/پروڈکٹ لسٹ امپورٹ کریں (Bulk CSV File Import):
-          </label>
-          <p className="text-xs text-slate-500 mb-2">
-            اپنی CSV فائل یہاں سلیکٹ کریں تاکہ سارا پرانا ڈیٹا خود بخود سسٹم میں آ جائے:
-          </p>
-          <input
-            type="file"
-            accept=".csv"
-            onChange={handleCSVImport}
-            className="text-sm"
-          />
-        </div>
-
-        <div className="flex items-center gap-2">
-          {!cameraOpen ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={startCameraScanner}
-              className="border-blue-600 text-blue-600 font-semibold"
-            >
-              📷 Scan Wholesale Bill / QR / Barcode
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={stopCamera}
-            >
-              ✕ Close Camera
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {cameraOpen && (
-        <div className="mb-6 space-y-2 overflow-hidden rounded-xl border-2 border-blue-500 bg-black p-3">
-          <video
-            ref={videoRef}
-            className="w-full max-h-72 rounded object-cover"
-            playsInline
-            muted
-          />
-          <canvas ref={canvasRef} className="hidden" />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-white text-xs">
-              ہول سیلر / مینوفیکچرر بل یا پروڈکٹ کے بار کوڈ/کیو آر پر کیمرہ رکھیں اور Capture دبائیں
-            </p>
-            <Button
-              type="button"
-              onClick={captureAndScanWholesale}
-              disabled={scanningPhoto}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
-            >
-              {scanningPhoto
-                ? "Scanning..."
-                : "📸 Capture Wholesale Bill / Barcode"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {scannedBillItems.length > 0 && (
-        <Card className="mb-6 border-blue-300 bg-blue-50/50">
-          <CardHeader className="flex flex-row items-center justify-between py-3">
-            <CardTitle className="text-sm font-bold text-blue-900">
-              Scanned Wholesale Bill Items ({scannedBillItems.length})
-            </CardTitle>
-            <Button
-              type="button"
-              onClick={handleAddAllScannedBillItems}
-              className="bg-green-600 hover:bg-green-700 text-white text-xs font-bold"
-            >
-              + Add All to Wholesale Purchase Ledger
-            </Button>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <div className="divide-y divide-blue-100 text-xs">
-              {scannedBillItems.map((row, idx) => (
-                <div
-                  key={`${row.sku}-${idx}`}
-                  className="flex items-center justify-between py-1.5"
-                >
-                  <span className="font-semibold text-slate-900">
-                    {row.name}{" "}
-                    <span className="text-slate-500">({row.sku})</span>
-                  </span>
-                  <span className="font-mono text-slate-700">
-                    Qty: {row.qty} | Cost: Rs {row.costPrice} | Sale: Rs{" "}
-                    {row.salePrice}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      <div className="grid gap-6 lg:grid-cols-3 mb-6">
-        <Card className="lg:col-span-1 border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">
-              ➕ Add Wholesale / Purchase Stock
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleAddProduct} className="space-y-3">
-              <Input
-                placeholder="Wholesaler / Manufacturer / Bill No..."
-                value={supplierOrBill}
-                onChange={(e) => setSupplierOrBill(e.target.value)}
-              />
-              <div className="flex gap-2">
-                <Input
-                  placeholder="QR / Barcode / SKU (Optional)..."
-                  value={sku}
-                  onChange={(e) => handleBarcodeLookup(e.target.value)}
-                  className="flex-1"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={cameraOpen ? stopCamera : startCameraScanner}
-                  className="px-3 border-blue-600 text-blue-600"
-                  title="Scan Wholesale Bill or Barcode"
-                >
-                  {cameraOpen ? "✕" : "📷"}
-                </Button>
-              </div>
-              <Input
-                placeholder="Product Name (e.g. Shampoo)..."
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  type="number"
-                  placeholder="Cost Price (پیچھے سے)..."
-                  value={costPrice}
-                  onChange={(e) => setCostPrice(e.target.value)}
-                />
-                <Input
-                  type="number"
-                  placeholder="Sale Price (سیل قیمت)..."
-                  value={salePrice}
-                  onChange={(e) => setSalePrice(e.target.value)}
-                  required
-                />
-              </div>
-              <Input
-                type="number"
-                placeholder="Stock Qty..."
-                value={stockQty}
-                onChange={(e) => setStockQty(e.target.value)}
-              />
-              <Button
-                type="submit"
-                disabled={scanningPhoto}
-                className="w-full bg-green-600 hover:bg-green-700 text-white font-bold"
-              >
-                Save to Inventory & Purchase Ledger
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-2 border-slate-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-lg">Search & Manage Inventory</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-4 items-center justify-between">
-              <Input
-                placeholder="Search by product name or SKU/Barcode..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="max-w-md h-11 bg-white"
-              />
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => loadProducts()}
-                  className="h-11 border-slate-300 text-slate-700 hover:bg-slate-100"
-                >
-                  🔄 Refresh
-                </Button>
-                <Button
-                  onClick={exportToCSV}
-                  className="h-11 bg-green-600 hover:bg-green-700 text-white"
-                >
-                  📊 Export to CSV
-                </Button>
-              </div>
-            </div>
-            <div className="text-xs text-slate-500">
-              Total Products in Database:{" "}
-              <span className="font-bold text-slate-900">
-                {products.length}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {error && (
-        <div className="bg-blue-50 border border-blue-200 text-blue-800 p-4 rounded-xl mb-4 flex justify-between items-center">
-          <p className="text-sm font-medium">{error}</p>
-          <Button
-            size="sm"
-            onClick={() => loadProducts()}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            Retry
-          </Button>
-        </div>
-      )}
-
-      <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm mb-6">
-        <table className="w-full text-sm text-left">
-          <thead className="bg-slate-100 text-slate-700 text-xs uppercase border-b border-slate-200">
-            <tr>
-              <th className="px-4 py-3">Barcode / SKU</th>
-              <th className="px-4 py-3">Item Name</th>
-              <th className="px-4 py-3 text-right">Cost Price (پیچھے سے)</th>
-              <th className="px-4 py-3 text-right">Sale Price (سیل)</th>
-              <th className="px-4 py-3 text-center">Stock Qty</th>
-              <th className="px-4 py-3 text-center">Status</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {loading ? (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-10 text-center text-slate-500 font-medium"
-                >
-                  Loading inventory items... Please wait.
-                </td>
-              </tr>
-            ) : filteredProducts.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-4 py-10 text-center text-slate-400"
-                >
-                  No products found in inventory. Add a new product or import CSV
-                  above.
-                </td>
-              </tr>
-            ) : (
-              filteredProducts.map((product) => {
-                const uCost = lookupUnitCost(
-                  product.id,
-                  product.sku,
-                  parseFloat(product.price || "0") || 0
-                );
-                return (
-                  <tr key={product.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-3 font-mono text-xs text-slate-600">
-                      {product.sku}
-                    </td>
-                    <td className="px-4 py-3 font-semibold text-slate-900">
-                      {product.name}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-slate-700">
-                      Rs {uCost.toFixed(2)}
-                    </td>
-                    <td className="px-4 py-3 text-right font-medium">
-                      Rs {product.price}
-                    </td>
-                    <td className="px-4 py-3 text-center font-bold">
-                      {product.stockQty}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      {product.stockQty > 5 ? (
-                        <Badge variant="success">In Stock</Badge>
-                      ) : product.stockQty > 0 ? (
-                        <Badge variant="warning">Low Stock</Badge>
-                      ) : (
-                        <Badge variant="destructive">Out of Stock</Badge>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+  const todaySales = salesEntries.filter
