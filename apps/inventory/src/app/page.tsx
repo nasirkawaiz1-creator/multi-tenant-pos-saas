@@ -210,11 +210,13 @@ export default function InventoryPage() {
     fallbackSalePrice: number,
     costMapArg: Record<string, number> = productCostMap
   ): number {
-    if (productId && costMapArg[`id:${productId}`] !== undefined) {
-      return costMapArg[`id:${productId}`];
+    if (productId) {
+      const byId = costMapArg[`id:${productId}`];
+      if (byId !== undefined) return byId;
     }
-    if (productSku && costMapArg[`sku:${productSku.toLowerCase()}`] !== undefined) {
-      return costMapArg[`sku:${productSku.toLowerCase()}`];
+    if (productSku) {
+      const bySku = costMapArg[`sku:${productSku.toLowerCase()}`];
+      if (bySku !== undefined) return bySku;
     }
     return fallbackSalePrice;
   }
@@ -807,7 +809,7 @@ export default function InventoryPage() {
     link.click();
     document.body.removeChild(link);
   }
-const filteredProducts = products.filter((p) => {
+  const filteredProducts = products.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
