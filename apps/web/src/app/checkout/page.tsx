@@ -27,14 +27,6 @@ interface StoreProfile {
   phone: string;
 }
 
-interface HandoffItem {
-  id: string;
-  code: string;
-  name: string;
-  qty: number;
-  price: number;
-}
-
 interface SpeechRecognitionAlternativeLike {
   transcript: string;
 }
@@ -120,14 +112,6 @@ export default function CheckoutPage() {
   const scanIntervalRef = useRef<number | null>(null);
   const barcodeInputRef = useRef<HTMLInputElement>(null);
 
-  const [qrOpen, setQrOpen] = useState(false);
-  const [sessionCode, setSessionCode] = useState("");
-  const [handoffUrl, setHandoffUrl] = useState("");
-  const [quickMobileCode, setQuickMobileCode] = useState("");
-  const [quickMobileName, setQuickMobileName] = useState("");
-  const [quickMobilePrice, setQuickMobilePrice] = useState("");
-  const [syncNotice, setSyncNotice] = useState("");
-
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
     name: "Loading Store...",
     details: "",
@@ -168,58 +152,6 @@ export default function CheckoutPage() {
       } catch {}
     };
   }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const incomingSession = params.get("handoffSession");
-    if (incomingSession) {
-      setSessionCode(incomingSession);
-      setQrOpen(true);
-      setSyncNotice(`Session connected: ${incomingSession}`);
-      return;
-    }
-
-    const billTag = receipt?.id || invoiceNo;
-    const code = `POS-${billTag}-${Date.now().toString(36).slice(-4).toUpperCase()}`;
-    setSessionCode(code);
-    const base = `${window.location.origin}${window.location.pathname}`;
-    const url = `${base}?handoffSession=${encodeURIComponent(
-      code
-    )}&bill=${encodeURIComponent(String(billTag))}`;
-    setHandoffUrl(url);
-  }, [receipt?.id, invoiceNo]);
-
-  useEffect(() => {
-    if (
-      !sessionCode ||
-      typeof window === "undefined" ||
-      !("BroadcastChannel" in window)
-    ) {
-      return;
-    }
-
-    const channel = new BroadcastChannel(`pos-handoff-${sessionCode}`);
-    channel.onmessage = (event: MessageEvent) => {
-      const incoming = event.data as HandoffItem | undefined;
-      if (incoming && incoming.name) {
-        const syntheticProduct: Product = {
-          id: incoming.id,
-          name: incoming.name,
-          sku: incoming.code,
-          price: String(incoming.price || 0),
-        } as Product;
-        addToCart(syntheticProduct, incoming.qty || 1);
-        setSyncNotice(
-          `آئٹم شامل ہو گیا: ${incoming.name} (x${incoming.qty || 1})`
-        );
-      }
-    };
-
-    return () => {
-      channel.close();
-    };
-  }, [sessionCode]);
 
   async function loadStoreProfile() {
     const today = getTodayDateKey();
@@ -316,13 +248,11 @@ export default function CheckoutPage() {
         }, 200);
       } else {
         setError(
-          "⚡ کیمرہ آن ہے — کوڈ سکین کریں یا نیچے QR/Barcode باکس و مائیک استعمال کریں۔"
+          "⚡ لائیو کیمرہ کھلا ہے — کوڈ اسکین کریں یا نیچے QR/Barcode باکس و مائیک استعمال کریں۔"
         );
       }
     } catch {
-      setError(
-        "کیمرہ دستیاب نہیں یا اجازت نہیں ملی؛ QR/Barcode باکس، بلوٹوتھ/کی بورڈ یا مائیک استعمال کریں۔"
-      );
+      setError("Camera access denied or not supported on this browser.");
     }
   }
 
@@ -652,48 +582,6 @@ export default function CheckoutPage() {
     window.open(url, "_blank");
   }
 
-  function handleSendMobileItemToLaptop(e: FormEvent) {
-    e.preventDefault();
-    const name = quickMobileName.trim();
-    if (!name) return;
-
-    const item: HandoffItem = {
-      id: `MOB-${Date.now().toString().slice(-6)}`,
-      code: quickMobileCode.trim() || `QR-${Date.now().toString().slice(-4)}`,
-      name,
-      qty: 1,
-      price: Math.max(0, Number(quickMobilePrice) || 0),
-    };
-
-    if (
-      typeof window !== "undefined" &&
-      "BroadcastChannel" in window &&
-      sessionCode
-    ) {
-      const channel = new BroadcastChannel(`pos-handoff-${sessionCode}`);
-      channel.postMessage(item);
-      channel.close();
-    }
-
-    const syntheticProduct: Product = {
-      id: item.id,
-      name: item.name,
-      sku: item.code,
-      price: String(item.price),
-    } as Product;
-    addToCart(syntheticProduct, item.qty);
-    setSyncNotice(`آئٹم شامل ہو گیا: ${item.name}`);
-    setQuickMobileCode("");
-    setQuickMobileName("");
-    setQuickMobilePrice("");
-  }
-
-  const qrImageSrc = handoffUrl
-    ? `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(
-        handoffUrl
-      )}`
-    : "";
-
   if (receipt) {
     const displaySubtotal =
       receiptSubtotal > 0
@@ -703,7 +591,7 @@ export default function CheckoutPage() {
 
     return (
       <AppShell title="Checkout">
-        <div className="mx-auto w-full max-w-md space-y-4 px-1 sm:px-0">
+        <div className="mx-auto max-w-md space-y-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Receipt</CardTitle>
@@ -711,13 +599,13 @@ export default function CheckoutPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="border-b border-slate-200 pb-3 text-center">
-                <h2 className="text-lg font-bold">{storeInfo.name}</h2>
+                <h2 className="font-bold text-lg">{storeInfo.name}</h2>
                 <p className="text-xs text-slate-600">{storeInfo.details}</p>
                 <p className="text-xs text-slate-600">
                   Owner Ph: {storeInfo.phone} | Date: {receiptDate}
                 </p>
                 {cleanCustomerPhone && (
-                  <p className="mt-0.5 text-xs font-semibold text-slate-800">
+                  <p className="text-xs font-semibold text-slate-800 mt-0.5">
                     Customer Ph: {cleanCustomerPhone}
                   </p>
                 )}
@@ -730,7 +618,7 @@ export default function CheckoutPage() {
                 {receipt.items?.map((item) => (
                   <div
                     key={item.id}
-                    className="flex justify-between py-2 font-mono text-sm"
+                    className="flex justify-between py-2 text-sm font-mono"
                   >
                     <span>
                       {item.productName} {item.unitPrice} x {item.quantity}
@@ -747,12 +635,12 @@ export default function CheckoutPage() {
                   <span>Rs {displaySubtotal}</span>
                 </div>
                 {receiptDiscount > 0 && (
-                  <div className="flex justify-between font-medium text-green-600">
+                  <div className="flex justify-between text-green-600 font-medium">
                     <span>Discount</span>
                     <span>-Rs {receiptDiscount.toFixed(2)}</span>
                   </div>
                 )}
-                <div className="flex justify-between pt-1 text-lg font-bold">
+                <div className="flex justify-between text-lg font-bold">
                   <span>Grand Total</span>
                   <span className="text-blue-600">
                     Rs {receiptGrandTotal.toFixed(2)}
@@ -767,100 +655,22 @@ export default function CheckoutPage() {
                   onChange={(e) => setCustomerPhone(e.target.value)}
                 />
                 <Button
-                  className="w-full bg-green-600 font-bold text-white hover:bg-green-700"
+                  className="w-full bg-green-600 hover:bg-green-700 text-white font-bold"
                   onClick={() => sendWhatsAppReceipt(customerPhone)}
                 >
                   💬 Send Receipt to Customer WhatsApp
                 </Button>
                 <Button
                   variant="outline"
-                  className="w-full border-green-600 font-bold text-green-700 hover:bg-green-50"
+                  className="w-full border-green-600 text-green-700 hover:bg-green-50 font-bold"
                   onClick={() => sendWhatsAppReceipt(storeInfo.phone)}
                 >
                   📱 {storeInfo.phone} — Send to Owner
                 </Button>
               </div>
 
-              <div className="space-y-2 border-t border-slate-200 pt-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full border-blue-600 font-semibold text-blue-700 hover:bg-blue-50"
-                  onClick={() => setQrOpen((prev) => !prev)}
-                >
-                  {qrOpen
-                    ? "Hide Laptop-Mobile QR Scan"
-                    : "📷 Mobile QR Scan (Laptop Cam Off)"}
-                </Button>
-
-                {qrOpen && (
-                  <div className="space-y-3 rounded-lg border border-blue-200 bg-blue-50/60 p-3">
-                    <div className="text-center">
-                      <p className="text-xs font-semibold text-slate-800">
-                        موبائل سے یہ QR سکین کریں — Session: {sessionCode}
-                      </p>
-                      {qrImageSrc && (
-                        <img
-                          src={qrImageSrc}
-                          alt="Mobile Handoff QR Code"
-                          className="mx-auto mt-2 h-40 w-40 rounded border border-slate-300 bg-white p-1.5"
-                        />
-                      )}
-                      <p className="mt-1 break-all text-[11px] text-slate-600">
-                        {handoffUrl}
-                      </p>
-                    </div>
-
-                    <form
-                      onSubmit={handleSendMobileItemToLaptop}
-                      className="space-y-2"
-                    >
-                      <p className="text-xs font-semibold text-slate-700">
-                        موبائل سے سکین/بولا ہوا آئٹم بل میں شامل کریں:
-                      </p>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        <Input
-                          placeholder="QR / Code"
-                          value={quickMobileCode}
-                          onChange={(e) => setQuickMobileCode(e.target.value)}
-                          className="bg-white text-xs"
-                        />
-                        <Input
-                          type="number"
-                          min={0}
-                          placeholder="Price (Rs)"
-                          value={quickMobilePrice}
-                          onChange={(e) => setQuickMobilePrice(e.target.value)}
-                          className="bg-white text-xs"
-                        />
-                      </div>
-                      <div className="flex gap-2">
-                        <Input
-                          placeholder="Item Name..."
-                          value={quickMobileName}
-                          onChange={(e) => setQuickMobileName(e.target.value)}
-                          className="flex-1 bg-white text-xs"
-                        />
-                        <Button
-                          type="submit"
-                          className="whitespace-nowrap bg-blue-600 text-xs font-bold text-white hover:bg-blue-700"
-                        >
-                          Add Item
-                        </Button>
-                      </div>
-                    </form>
-
-                    {syncNotice && (
-                      <p className="rounded bg-white px-2.5 py-1.5 text-xs font-medium text-emerald-700">
-                        {syncNotice}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-
               <Button
-                className="mt-2 w-full"
+                className="w-full mt-2"
                 onClick={() => {
                   setReceipt(null);
                   setCustomerPhone("");
@@ -883,7 +693,7 @@ export default function CheckoutPage() {
     <AppShell
       title="Checkout"
       nav={
-        <nav className="flex flex-wrap gap-3 text-sm sm:gap-4">
+        <nav className="flex gap-4 text-sm">
           <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
             Dashboard
           </a>
@@ -896,12 +706,10 @@ export default function CheckoutPage() {
         </nav>
       }
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+      <div className="mb-4 border-b border-slate-200 pb-3 flex flex-wrap justify-between items-center gap-2">
         <div>
-          <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
-            {storeInfo.name}
-          </h1>
-          <p className="text-xs font-medium text-slate-700 sm:text-sm">
+          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
+          <p className="text-sm text-slate-700 font-medium">
             {storeInfo.details} | Ph: {storeInfo.phone} | Date: {currentDateKey}
           </p>
         </div>
@@ -911,19 +719,19 @@ export default function CheckoutPage() {
             type="text"
             value={attendantName}
             onChange={(e) => setAttendantName(e.target.value)}
-            className="w-32 rounded border border-slate-300 px-2 py-1 text-sm font-semibold"
+            className="px-2 py-1 border border-slate-300 rounded text-sm w-32 font-semibold"
           />
         </div>
       </div>
 
       <PageHeader
         title={`Checkout Terminal (Bill #${invoiceNo} • ${currentDateKey})`}
-        description="Mobile & Laptop Active • QR / Barcode + Voice Mic Entry (No n8n Delay) ⚡"
+        description="Instant QR / Barcode + Voice Mic Entry (No n8n Delay) ⚡"
       />
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <div className="lg:col-span-2 space-y-4">
+          <div className="flex flex-wrap gap-2">
             <Input
               ref={barcodeInputRef}
               placeholder="Scan Barcode / QR Code..."
@@ -935,69 +743,67 @@ export default function CheckoutPage() {
                   handleBarcodeScanned(barcodeInput);
                 }
               }}
-              className="h-12 w-full flex-1 text-base sm:min-w-[200px]"
+              className="h-12 text-base flex-1 min-w-[200px]"
               autoFocus
             />
-            <div className="flex gap-2">
+            <Button
+              type="button"
+              onClick={() => handleBarcodeScanned(barcodeInput)}
+              className="h-12 px-6 bg-slate-900 hover:bg-slate-800 text-white font-medium"
+            >
+              Scan / Find
+            </Button>
+            {!cameraOpen ? (
               <Button
                 type="button"
-                onClick={() => handleBarcodeScanned(barcodeInput)}
-                className="h-12 flex-1 bg-slate-900 px-5 font-medium text-white hover:bg-slate-800 sm:flex-none sm:px-6"
+                variant="outline"
+                className="h-12 px-4 border-blue-600 text-blue-600"
+                onClick={startCameraScanner}
               >
-                Scan / Find
+                📷 Camera Scan
               </Button>
-              {!cameraOpen ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-12 flex-1 border-blue-600 px-4 text-blue-600 sm:flex-none"
-                  onClick={startCameraScanner}
-                >
-                  📷 Camera Scan
-                </Button>
-              ) : (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  className="h-12 flex-1 px-4 sm:flex-none"
-                  onClick={stopCamera}
-                >
-                  ✕ Close Camera
-                </Button>
-              )}
-            </div>
+            ) : (
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-12 px-4"
+                onClick={stopCamera}
+              >
+                ✕ Close Camera
+              </Button>
+            )}
           </div>
 
           {cameraOpen && (
             <div className="space-y-2 overflow-hidden rounded-xl border-2 border-blue-500 bg-black p-2">
               <video
                 ref={videoRef}
-                className="max-h-64 w-full rounded object-cover"
+                className="w-full max-h-64 rounded object-cover"
                 playsInline
                 muted
               />
-              <p className="text-xs text-white">
-                QR یا Barcode کیمرے کے سامنے رکھیں — خود بخود سکین ہو جائے گا
+              <p className="text-white text-xs">
+                QR یا Barcode کیمرے کے سامنے رکھیں — خود بخود اسکین ہو جائے گا
               </p>
             </div>
           )}
 
           <form
             onSubmit={handleAddAndSave}
-            className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-4"
+            className="space-y-3 p-4 rounded-xl border border-slate-200 bg-slate-50"
           >
             <div className="flex gap-2">
               <Input
                 placeholder="Item Name (Voice / Copy / Auto-fills on scan)..."
                 value={itemNameInput}
                 onChange={(e) => setItemNameInput(e.target.value)}
-                className="h-12 flex-1 bg-white text-base font-medium"
+                className="h-12 text-base bg-white font-medium flex-1"
                 required
               />
               <Button
                 type="button"
                 variant="outline"
-                className="h-12 border-slate-300 px-3 text-xs font-semibold text-slate-700"
+                className="h-12 px-3 text-xs font-semibold border-slate-300 text-slate-700"
                 onClick={() =>
                   setMicLang((prev) => (prev === "ur-PK" ? "en-US" : "ur-PK"))
                 }
@@ -1011,8 +817,8 @@ export default function CheckoutPage() {
                 aria-label="Voice Mic"
                 className={
                   micListening
-                    ? "h-12 border-red-500 bg-red-50 px-4 font-bold text-red-700"
-                    : "h-12 border-slate-300 px-4 text-slate-700"
+                    ? "h-12 px-4 border-red-500 bg-red-50 text-red-700 font-bold"
+                    : "h-12 px-4 border-slate-300 text-slate-700"
                 }
               >
                 {micListening ? "⏹" : "🎤"}
@@ -1026,7 +832,7 @@ export default function CheckoutPage() {
                 placeholder="Qty"
                 value={qtyInput}
                 onChange={(e) => setQtyInput(e.target.value)}
-                className="h-12 bg-white text-base"
+                className="h-12 text-base bg-white"
                 required
               />
               <Input
@@ -1034,27 +840,27 @@ export default function CheckoutPage() {
                 placeholder="Price (Rs)"
                 value={priceInput}
                 onChange={(e) => setPriceInput(e.target.value)}
-                className="h-12 bg-white text-base"
+                className="h-12 text-base bg-white"
               />
             </div>
 
             <Button
               type="submit"
-              className="h-12 w-full bg-green-600 text-base font-bold text-white shadow-sm hover:bg-green-700"
+              className="w-full h-12 bg-green-600 hover:bg-green-700 text-white font-bold text-base shadow-sm"
             >
               + Add & Save
             </Button>
           </form>
 
           {error && (
-            <p className="rounded bg-blue-50 p-2 text-sm font-medium text-blue-600">
+            <p className="text-sm text-blue-600 font-medium bg-blue-50 p-2 rounded">
               {error}
             </p>
           )}
 
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-blue-600 text-xs uppercase text-white">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-blue-600 text-white text-xs uppercase">
                 <tr>
                   <th className="px-3 py-3">Code</th>
                   <th className="px-3 py-3">Item Name</th>
@@ -1080,7 +886,7 @@ export default function CheckoutPage() {
                     ).toFixed(2);
                     return (
                       <tr key={item.product.id}>
-                        <td className="px-3 py-2 font-mono text-xs text-slate-600">
+                        <td className="px-3 py-2 text-xs font-mono text-slate-600">
                           {item.product.sku}
                         </td>
                         <td className="px-3 py-2 font-medium text-slate-900">
@@ -1106,7 +912,7 @@ export default function CheckoutPage() {
                                   parseInt(e.target.value) || 0
                                 )
                               }
-                              className="w-12 rounded border border-slate-300 py-0.5 text-center text-sm font-bold"
+                              className="w-12 rounded border border-slate-300 text-center text-sm font-bold py-0.5"
                             />
                             <Button
                               size="icon"
@@ -1125,7 +931,7 @@ export default function CheckoutPage() {
                             onChange={(e) =>
                               updateItemPrice(item.product.id, e.target.value)
                             }
-                            className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right text-sm"
+                            className="w-20 rounded border border-slate-300 text-right text-sm px-1 py-0.5"
                           />
                         </td>
                         <td className="px-3 py-2 text-right font-bold">
@@ -1153,7 +959,7 @@ export default function CheckoutPage() {
                 </div>
 
                 <div className="flex items-center justify-between pt-1">
-                  <span className="font-medium text-slate-700">
+                  <span className="text-slate-700 font-medium">
                     Discount (Rs)
                   </span>
                   <Input
@@ -1161,7 +967,7 @@ export default function CheckoutPage() {
                     placeholder="0"
                     value={discountAmount}
                     onChange={(e) => setDiscountAmount(e.target.value)}
-                    className="h-8 w-28 text-right text-sm"
+                    className="w-28 h-8 text-right text-sm"
                   />
                 </div>
 
@@ -1173,7 +979,7 @@ export default function CheckoutPage() {
 
               <Button
                 size="lg"
-                className="w-full bg-blue-600 font-bold text-white hover:bg-blue-700"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold"
                 onClick={completeSale}
                 disabled={processing || cart.length === 0}
               >
