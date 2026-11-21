@@ -35,6 +35,7 @@ interface DailyLedgerEntry {
   date: string;
   invoiceCount: number;
   lastInvoiceNo: string;
+  lastBillAmount: number;
   totalSales: number;
 }
 
@@ -111,6 +112,7 @@ function readLedgerEntry(
         date: dateKey,
         invoiceCount: Number(parsed.invoiceCount) || 0,
         lastInvoiceNo: String(parsed.lastInvoiceNo || "--"),
+        lastBillAmount: Number(parsed.lastBillAmount) || 0,
         totalSales: Number(parsed.totalSales) || 0,
       };
     }
@@ -151,14 +153,18 @@ function recordSaleInLedger(
     date: dateKey,
     invoiceCount: 0,
     lastInvoiceNo: issuedInvoice,
+    lastBillAmount: 0,
     totalSales: 0,
   };
+
+  const roundedAmount = Math.round(amount * 100) / 100;
 
   const updatedEntry: DailyLedgerEntry = {
     date: dateKey,
     invoiceCount: existing.invoiceCount + 1,
     lastInvoiceNo: issuedInvoice,
-    totalSales: Math.round((existing.totalSales + amount) * 100) / 100,
+    lastBillAmount: roundedAmount,
+    totalSales: Math.round((existing.totalSales + roundedAmount) * 100) / 100,
   };
 
   const updatedDates = Array.from(new Set([...readLedgerDates(scope), dateKey]));
@@ -627,6 +633,7 @@ export default function CheckoutPage() {
     date: currentDateKey,
     invoiceCount: 0,
     lastInvoiceNo: "--",
+    lastBillAmount: 0,
     totalSales: 0,
   };
 
@@ -871,32 +878,222 @@ export default function CheckoutPage() {
             </p>
           )}
 
-          <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-            <table className="w-full text-sm text-left">
-              <thead className="bg-blue-600 text-white text-xs uppercase">
-                <tr>
-                  <th className="px-3 py-3">Code</th>
-                  <th className="px-3 py-3">Item Name</th>
-                  <th className="px-3 py-3 text-center">Qty</th>
-                  <th className="px-3 py-3 text-right">Price (Rs)</th>
-                  <th className="px-3 py-3 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {cart.length === 0 ? (
+          {/* آئٹمز ٹیبل اور اس کے بالکل نیچے روزانہ کے بل اور ڈے کلوزنگ ٹوٹل کا حساب */}
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-blue-600 text-white text-xs uppercase">
                   <tr>
-                    <td
-                      colSpan={5}
-                      className="px-4 py-8 text-center text-slate-400"
-                    >
-                      Scan barcode or capture product photo to add instantly...
-                    </td>
+                    <th className="px-3 py-3">Code</th>
+                    <th className="px-3 py-3">Item Name</th>
+                    <th className="px-3 py-3 text-center">Qty</th>
+                    <th className="px-3 py-3 text-right">Price (Rs)</th>
+                    <th className="px-3 py-3 text-right">Total</th>
                   </tr>
-                ) : (
-                  cart.map((item) => {
-                    const rowTotal = (
-                      (parseFloat(item.product.price) || 0) * item.quantity
-                    ).toFixed(2);
-                    return (
-                      <tr key={item.product.id}>
-                        <td className="px-3 py-2 text-xs font-mono text-
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {cart.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-4 py-8 text-center text-slate-400"
+                      >
+                        Scan barcode or capture product photo to add instantly...
+                      </td>
+                    </tr>
+                  ) : (
+                    cart.map((item) => {
+                      const rowTotal = (
+                        (parseFloat(item.product.price) || 0) * item.quantity
+                      ).toFixed(2);
+                      return (
+                        <tr key={item.product.id}>
+                          <td className="px-3 py-2 text-xs font-mono text-slate-600">
+                            {item.product.sku}
+                          </td>
+                          <td className="px-3 py-2 font-medium text-slate-900">
+                            {item.product.name}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center justify-center gap-1">
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="h-7 w-7"
+                                onClick={() => updateQty(item.product.id, -1)}
+                              >
+                                −
+                              </Button>
+                              <input
+                                type="number"
+                                min={1}
+                                value={item.quantity}
+                                onChange={(e) =>
+                                  setExactQty(
+                                    item.product.id,
+                                    parseInt(e.target.value) || 0
+                                  )
+                                }
+                                className="w-12 rounded border border-slate-300 text-center text-sm font-bold py-0.5"
+                              />
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="h-7 w-7"
+                                onClick={() => updateQty(item.product.id, 1)}
+                              >
+                                +
+                              </Button>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <input
+                              type="number"
+                              value={item.product.price}
+                              onChange={(e) =>
+                                updateItemPrice(item.product.id, e.target.value)
+                              }
+                              className="w-20 rounded border border-slate-300 text-right text-sm px-1 py-0.5"
+                            />
+                          </td>
+                          <td className="px-3 py-2 text-right font-bold">
+                            {rowTotal}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* ٹیبل کے بالکل نیچے آج کی تاریخ، بل کی رقم، اور پورے دن کا کلوزنگ حساب */}
+            <div className="border-t border-slate-200 bg-slate-900 text-white p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-2">
+                <span className="text-xs font-bold uppercase tracking-wide text-slate-200">
+                  Daily Checkout Detail ({storeInfo.name})
+                </span>
+                <span className="text-xs font-mono text-blue-300">
+                  Date: {currentDateKey} | Next Bill: #{invoiceNo}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-lg bg-slate-800 p-2.5">
+                  <div className="text-slate-400">Today Date</div>
+                  <div className="mt-0.5 font-bold text-white">
+                    {todaySummary.date}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-800 p-2.5">
+                  <div className="text-slate-400">Current Bill Amount</div>
+                  <div className="mt-0.5 font-bold text-blue-300">
+                    Rs {total.toFixed(2)}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-800 p-2.5">
+                  <div className="text-slate-400">Bills Today</div>
+                  <div className="mt-0.5 font-bold text-white">
+                    {todaySummary.invoiceCount} (Last: #{todaySummary.lastInvoiceNo})
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-800 p-2.5">
+                  <div className="text-slate-400">Day Closing Total</div>
+                  <div className="mt-0.5 font-bold text-emerald-400">
+                    Rs{" "}
+                    {todaySummary.totalSales.toLocaleString("en-PK", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {ledgerList.length > 0 && (
+                <div className="overflow-x-auto pt-1">
+                  <table className="w-full text-xs text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-700 text-slate-400 uppercase">
+                        <th className="py-1.5 pr-3">Date</th>
+                        <th className="py-1.5 px-3 text-center">Bills</th>
+                        <th className="py-1.5 px-3 text-center">Last Bill</th>
+                        <th className="py-1.5 px-3 text-right">Last Bill Rs</th>
+                        <th className="py-1.5 pl-3 text-right">Day Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {ledgerList.map((dayRow) => (
+                        <tr key={dayRow.date} className="text-slate-200">
+                          <td className="py-1.5 pr-3 font-mono">{dayRow.date}</td>
+                          <td className="py-1.5 px-3 text-center">
+                            {dayRow.invoiceCount}
+                          </td>
+                          <td className="py-1.5 px-3 text-center font-mono">
+                            #{dayRow.lastInvoiceNo}
+                          </td>
+                          <td className="py-1.5 px-3 text-right">
+                            Rs {dayRow.lastBillAmount.toFixed(2)}
+                          </td>
+                          <td className="py-1.5 pl-3 text-right font-bold text-emerald-400">
+                            Rs{" "}
+                            {dayRow.totalSales.toLocaleString("en-PK", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Bill Summary (#{invoiceNo})</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span>Subtotal</span>
+                  <span>Rs {subtotal.toFixed(2)}</span>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-700 font-medium">
+                    Discount (Rs)
+                  </span>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    value={discountAmount}
+                    onChange={(e) => setDiscountAmount(e.target.value)}
+                    className="w-28 h-8 text-right text-sm"
+                  />
+                </div>
+
+                <div className="flex justify-between border-t pt-2 text-lg font-bold">
+                  <span>Grand Total</span>
+                  <span className="text-blue-600">Rs {total.toFixed(2)}</span>
+                </div>
+              </div>
+
+              <Button
+                size="lg"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold"
+                onClick={completeSale}
+                disabled={processing || cart.length === 0}
+              >
+                {processing ? "Processing..." : "Complete Sale & Print"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
