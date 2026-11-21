@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq, orderItems, orders, products } from "@pos/database";
+import { and, desc, eq, inArray, orderItems, orders, products } from "@pos/database";
 import { z } from "zod";
 import { mapOrder } from "../lib/mappers.js";
 import { runWithTenant } from "../middleware/tenant-context.js";
@@ -140,6 +140,54 @@ export async function orderRoutes(app: FastifyInstance) {
       }
     },
   );
+
+  // The logged-in store's own orders (newest first), each with its items. Used by the
+  // inventory daily ledger to total up each day's sales.
+  app.get("/orders", { preHandler: [app.authenticate] }, async (request) => {
+    const { limit } = z
+      .object({ limit: z.coerce.number().int().min(1).max(1000).default(500) })
+      .parse(request.query);
+
+    const data = await runWithTenant(request, async (tx, tenantId) => {
+      const orderRows = await tx
+        .select()
+        .from(orders)
+        .where(eq(orders.tenantId, tenantId))
+        .orderBy(desc(orders.createdAt))
+        .limit(limit);
+      if (orderRows.length === 0) return [];
+
+      const itemRows = await tx
+        .select()
+        .from(orderItems)
+        .where(
+          and(
+            eq(orderItems.tenantId, tenantId),
+            inArray(
+              orderItems.orderId,
+              orderRows.map((o) => o.id),
+            ),
+          ),
+        );
+
+      return orderRows.map((order) => ({
+        ...mapOrder(order),
+        items: itemRows
+          .filter((item) => item.orderId === order.id)
+          .map((item) => ({
+            id: item.id,
+            orderId: item.orderId,
+            productId: item.productId,
+            tenantId: item.tenantId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            productName: item.productName,
+          })),
+      }));
+    });
+
+    return { data };
+  });
 
   app.get(
     "/orders/:id",
