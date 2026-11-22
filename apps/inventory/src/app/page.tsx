@@ -302,7 +302,6 @@ export default function InventoryPage() {
   useEffect(() => {
     todayDateRef.current = todayDate;
   }, [todayDate]);
-
   function saveCostMapping(
     productId: string | undefined,
     productSku: string | undefined,
@@ -1237,7 +1236,9 @@ export default function InventoryPage() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    const filteredProducts = products.filter((p) => {
+  }
+
+  const filteredProducts = products.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -1291,7 +1292,6 @@ export default function InventoryPage() {
       isClosed,
     };
   });
-
   return (
     <AppShell
       title="Inventory"
@@ -2207,4 +2207,3 @@ export default function InventoryPage() {
     </AppShell>
   );
 }
-
