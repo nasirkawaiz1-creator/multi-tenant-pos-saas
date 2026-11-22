@@ -191,37 +191,7 @@ export default function InventoryPage() {
   >("purchase");
 
   const [customerAccounts, setCustomerAccounts] = useState<CustomerKhataAccount[]>(
-    () =>
-      safeJsonRead<CustomerKhataAccount[]>(CUSTOMER_KHATA_BOOK_KEY, [
-        {
-          id: "CUST-SAMPLE-1",
-          name: "Nadia baji",
-          phone: "03001234567",
-          address: "سرسید چوک، راولپنڈی",
-          balance: 3805,
-          lastDate: getTodayDateStr(),
-          transactions: [
-            {
-              id: "TX-SAMPLE-1",
-              date: getTodayDateStr(),
-              time: "10:30 AM",
-              type: "udhaar",
-              amount: 5000,
-              note: "سودا سلف ادھار",
-              balanceAfter: 5000,
-            },
-            {
-              id: "TX-SAMPLE-2",
-              date: getTodayDateStr(),
-              time: "04:15 PM",
-              type: "received",
-              amount: 1195,
-              note: "کیش وصولی",
-              balanceAfter: 3805,
-            },
-          ],
-        },
-      ])
+    []
   );
 
   const [khataSearch, setKhataSearch] = useState("");
@@ -273,7 +243,7 @@ export default function InventoryPage() {
     const savedCustomers = safeJsonRead<CustomerKhataAccount[]>(
       CUSTOMER_KHATA_BOOK_KEY,
       []
-    );
+    ).filter((c) => c.id !== "CUST-SAMPLE-1");
     const savedCostMap = safeJsonRead<Record<string, number>>(
       PRODUCT_COST_MAP_KEY,
       {}
@@ -282,9 +252,8 @@ export default function InventoryPage() {
     setPurchaseEntries(savedPurchases);
     setSalesEntries(savedSales);
     setKhataEntries(savedKhata);
-    if (savedCustomers.length > 0) {
-      setCustomerAccounts(savedCustomers);
-    }
+    setCustomerAccounts(savedCustomers);
+    safeJsonWrite(CUSTOMER_KHATA_BOOK_KEY, savedCustomers);
     setProductCostMap(savedCostMap);
     productCostMapRef.current = savedCostMap;
 
@@ -1849,7 +1818,7 @@ export default function InventoryPage() {
                   <div className="mt-3 space-y-2">
                     {filteredCustomers.length === 0 ? (
                       <p className="py-4 text-center text-xs text-slate-500">
-                        کوئی کسٹمر نہیں ملا۔ نیچے &quot;+ Customer&quot; سے نیا کھاتہ کھولیں۔
+                        ابھی کوئی کسٹمر ایڈ نہیں ہے۔ نیچے &quot;+ Customer (نیا کھاتہ)&quot; سے اپنا کسٹمر شامل کریں۔
                       </p>
                     ) : (
                       filteredCustomers.map((cust) => {
