@@ -475,14 +475,19 @@ export default function InventoryPage() {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  function handleCreateCustomerKhata(e: FormEvent) {
-    e.preventDefault();
-    const cName = newCustName.trim();
-    const cPhone = newCustPhone.trim();
-    const cAddress = newCustAddress.trim();
-    const opening = Math.max(0, Number(newCustOpeningUdhaar) || 0);
-    const entryDate = newCustDate || getTodayDateStr();
-    if (!cName) return;
+  function createCustomerRecord(params: {
+    cName: string;
+    cPhone: string;
+    cAddress: string;
+    opening: number;
+    entryDate: string;
+  }): CustomerKhataAccount | null {
+    const cName = params.cName.trim();
+    const cPhone = params.cPhone.trim();
+    const cAddress = params.cAddress.trim();
+    const opening = Math.max(0, Number(params.opening) || 0);
+    const entryDate = params.entryDate || getTodayDateStr();
+    if (!cName) return null;
 
     const now = new Date();
     const initialTxs: CustomerKhataTx[] =
@@ -537,6 +542,43 @@ export default function InventoryPage() {
     setNewCustAddress("");
     setNewCustOpeningUdhaar("");
     setKhataModalMode("none");
+
+    return newAcc;
+  }
+
+  function handleCreateCustomerKhata(e: FormEvent) {
+    e.preventDefault();
+    createCustomerRecord({
+      cName: newCustName,
+      cPhone: newCustPhone,
+      cAddress: newCustAddress,
+      opening: Number(newCustOpeningUdhaar) || 0,
+      entryDate: newCustDate,
+    });
+  }
+
+  function handleSaveAndSendWhatsApp() {
+    const cName = newCustName.trim();
+    const cPhone = newCustPhone.trim();
+    const opening = Math.max(0, Number(newCustOpeningUdhaar) || 0);
+    const entryDate = newCustDate || getTodayDateStr();
+
+    if (!cName || !cPhone) {
+      alert("براہ کرم کسٹمر کا نام اور واٹس ایپ نمبر درج کریں۔");
+      return;
+    }
+
+    const created = createCustomerRecord({
+      cName,
+      cPhone,
+      cAddress: newCustAddress,
+      opening,
+      entryDate,
+    });
+
+    if (created) {
+      openWhatsAppReminder(created);
+    }
   }
 
   function handleRecordCustomerTx(e: FormEvent) {
@@ -1195,8 +1237,7 @@ export default function InventoryPage() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-  }
-  const filteredProducts = products.filter((p) => {
+    const filteredProducts = products.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -1772,13 +1813,23 @@ export default function InventoryPage() {
             });
             const activeCustomer =
               customerAccounts.find((c) => c.id === selectedCustomerId) ||
+              activeDebtors[0] ||
               filteredCustomers[0] ||
               null;
+
+            const handleTopWhatsAppReminderClick = () => {
+              if (activeCustomer && activeCustomer.phone.trim()) {
+                openWhatsAppReminder(activeCustomer);
+                return;
+              }
+              setNewCustDate(getTodayDateStr());
+              setKhataModalMode("new_customer");
+            };
 
             return (
               <div className="space-y-4">
                 <div className="rounded-xl border border-emerald-200 bg-[#f7f5ee] p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="text-xs font-medium text-slate-600">
                         To collect (کل وصولی)
@@ -1787,24 +1838,23 @@ export default function InventoryPage() {
                         {formatMoney(totalToCollect)}
                       </p>
                     </div>
-                    <div className="text-right">
-                      <span className="text-xs font-medium text-slate-600">
-                        from {activeDebtors.length} customers
-                      </span>
-                      {activeDebtors.length > 0 && activeDebtors[0] && (
-                        <div className="mt-1">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => openWhatsAppReminder(activeDebtors[0]!)}
-                            className="border-rose-200 bg-rose-50 text-xs font-semibold text-rose-900 hover:bg-rose-100"
-                          >
-                            💬 Remind on WhatsApp
-                          </Button>
-                        </div>
-                      )}
-                    </div>
+                    <span className="mt-4 text-xs font-medium text-slate-600">
+                      from {activeDebtors.length} customers
+                    </span>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={handleTopWhatsAppReminderClick}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-[#f9ecea] px-4 py-2.5 text-sm font-semibold text-rose-950 transition hover:bg-rose-100"
+                  >
+                    <span>💬</span>
+                    <span>
+                      {activeCustomer
+                        ? `Remind on WhatsApp (${activeCustomer.name})`
+                        : "Remind on WhatsApp"}
+                    </span>
+                  </button>
 
                   <div className="mt-3">
                     <Input
@@ -1818,7 +1868,7 @@ export default function InventoryPage() {
                   <div className="mt-3 space-y-2">
                     {filteredCustomers.length === 0 ? (
                       <p className="py-4 text-center text-xs text-slate-500">
-                        ابھی کوئی کسٹمر ایڈ نہیں ہے۔ نیچے &quot;+ Customer (نیا کھاتہ)&quot; سے اپنا کسٹمر شامل کریں۔
+                        ابھی کوئی کسٹمر ایڈ نہیں ہے۔ اوپر &quot;Remind on WhatsApp&quot; یا نیچے &quot;+ Customer (نیا کھاتہ)&quot; سے کسٹمر شامل کریں۔
                       </p>
                     ) : (
                       filteredCustomers.map((cust) => {
@@ -1859,19 +1909,18 @@ export default function InventoryPage() {
                               >
                                 {formatMoney(cust.balance)}
                               </span>
-                              {cust.balance > 0 && (
-                                <button
-                                  type="button"
-                                  title="Send WhatsApp Reminder"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openWhatsAppReminder(cust);
-                                  }}
-                                  className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
-                                >
-                                  💬
-                                </button>
-                              )}
+                              <button
+                                type="button"
+                                title="Send WhatsApp Reminder"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedCustomerId(cust.id);
+                                  openWhatsAppReminder(cust);
+                                }}
+                                className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                              >
+                                💬
+                              </button>
                             </div>
                           </div>
                         );
@@ -1964,7 +2013,17 @@ export default function InventoryPage() {
                         onChange={(e) => setNewCustDate(e.target.value)}
                       />
                     </div>
-                    <Button type="submit">Save Customer Khata</Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="submit">Save Customer Khata</Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="border-emerald-300 bg-white text-emerald-900"
+                        onClick={handleSaveAndSendWhatsApp}
+                      >
+                        💬 Save &amp; Send WhatsApp
+                      </Button>
+                    </div>
                   </form>
                 )}
 
@@ -2043,15 +2102,13 @@ export default function InventoryPage() {
                         <span className="rounded bg-slate-100 px-3 py-1 text-xs font-bold text-slate-900">
                           بقایا بیلنس: {formatMoney(activeCustomer.balance)}
                         </span>
-                        {activeCustomer.balance > 0 && (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => openWhatsAppReminder(activeCustomer)}
-                          >
-                            💬 WhatsApp Reminder
-                          </Button>
-                        )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => openWhatsAppReminder(activeCustomer)}
+                        >
+                          💬 WhatsApp Reminder
+                        </Button>
                       </div>
                     </div>
 
@@ -2149,4 +2206,5 @@ export default function InventoryPage() {
       </Card>
     </AppShell>
   );
+}
 }
