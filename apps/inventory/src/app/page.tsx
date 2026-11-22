@@ -23,6 +23,7 @@ const PURCHASE_LEDGER_KEY = "pos:wholesalePurchaseLedger:v1";
 const SALES_LEDGER_KEY = "pos:customerSalesLedger:v1";
 const PRODUCT_COST_MAP_KEY = "pos:productCostMap:v1";
 const KHATA_LEDGER_KEY = "pos:dailyKhataLedger:v1";
+const CUSTOMER_KHATA_BOOK_KEY = "pos:customerKhataBook:v1";
 const MIDNIGHT_ROLLOVER_INTERVAL_MS = 15000;
 
 type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
@@ -68,6 +69,26 @@ interface KhataEntry {
   title: string;
   entryType: KhataEntryType;
   amount: number;
+}
+
+interface CustomerKhataTx {
+  id: string;
+  date: string;
+  time: string;
+  type: "udhaar" | "received";
+  amount: number;
+  note: string;
+  balanceAfter: number;
+}
+
+interface CustomerKhataAccount {
+  id: string;
+  name: string;
+  phone: string;
+  address: string;
+  balance: number;
+  lastDate: string;
+  transactions: CustomerKhataTx[];
 }
 
 interface ScannedBillItem {
@@ -119,6 +140,7 @@ function formatTimeStr(dateObj: Date = new Date()): string {
 
 function safeJsonRead<T>(key: string, fallback: T): T {
   try {
+    if (typeof window === "undefined") return fallback;
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
     return JSON.parse(raw) as T;
@@ -129,6 +151,7 @@ function safeJsonRead<T>(key: string, fallback: T): T {
 
 function safeJsonWrite<T>(key: string, value: T): void {
   try {
+    if (typeof window === "undefined") return;
     localStorage.setItem(key, JSON.stringify(value));
   } catch {}
 }
@@ -167,9 +190,56 @@ export default function InventoryPage() {
     "purchase" | "sales" | "khata"
   >("purchase");
 
-  const [khataTitle, setKhataTitle] = useState("");
-  const [khataAmount, setKhataAmount] = useState("");
-  const [khataType, setKhataType] = useState<KhataEntryType>("khata");
+  const [customerAccounts, setCustomerAccounts] = useState<CustomerKhataAccount[]>(
+    () =>
+      safeJsonRead<CustomerKhataAccount[]>(CUSTOMER_KHATA_BOOK_KEY, [
+        {
+          id: "CUST-SAMPLE-1",
+          name: "Nadia baji",
+          phone: "03001234567",
+          address: "سرسید چوک، راولپنڈی",
+          balance: 3805,
+          lastDate: getTodayDateStr(),
+          transactions: [
+            {
+              id: "TX-SAMPLE-1",
+              date: getTodayDateStr(),
+              time: "10:30 AM",
+              type: "udhaar",
+              amount: 5000,
+              note: "سودا سلف ادھار",
+              balanceAfter: 5000,
+            },
+            {
+              id: "TX-SAMPLE-2",
+              date: getTodayDateStr(),
+              time: "04:15 PM",
+              type: "received",
+              amount: 1195,
+              note: "کیش وصولی",
+              balanceAfter: 3805,
+            },
+          ],
+        },
+      ])
+  );
+
+  const [khataSearch, setKhataSearch] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
+  const [khataModalMode, setKhataModalMode] = useState<
+    "none" | "new_customer" | "received" | "udhaar"
+  >("none");
+
+  const [newCustName, setNewCustName] = useState("");
+  const [newCustPhone, setNewCustPhone] = useState("");
+  const [newCustAddress, setNewCustAddress] = useState("");
+  const [newCustOpeningUdhaar, setNewCustOpeningUdhaar] = useState("");
+  const [newCustDate, setNewCustDate] = useState(() => getTodayDateStr());
+
+  const [txCustomerId, setTxCustomerId] = useState("");
+  const [txAmount, setTxAmount] = useState("");
+  const [txNote, setTxNote] = useState("");
+  const [txDate, setTxDate] = useState(() => getTodayDateStr());
 
   const [selectedChannel, setSelectedChannel] = useState<DeviceChannel>("Barcode");
   const [deviceStatusText, setDeviceStatusText] = useState(
@@ -200,6 +270,10 @@ export default function InventoryPage() {
     const savedPurchases = safeJsonRead<PurchaseEntry[]>(PURCHASE_LEDGER_KEY, []);
     const savedSales = safeJsonRead<SaleEntry[]>(SALES_LEDGER_KEY, []);
     const savedKhata = safeJsonRead<KhataEntry[]>(KHATA_LEDGER_KEY, []);
+    const savedCustomers = safeJsonRead<CustomerKhataAccount[]>(
+      CUSTOMER_KHATA_BOOK_KEY,
+      []
+    );
     const savedCostMap = safeJsonRead<Record<string, number>>(
       PRODUCT_COST_MAP_KEY,
       {}
@@ -208,6 +282,9 @@ export default function InventoryPage() {
     setPurchaseEntries(savedPurchases);
     setSalesEntries(savedSales);
     setKhataEntries(savedKhata);
+    if (savedCustomers.length > 0) {
+      setCustomerAccounts(savedCustomers);
+    }
     setProductCostMap(savedCostMap);
     productCostMapRef.current = savedCostMap;
 
@@ -216,8 +293,6 @@ export default function InventoryPage() {
     syncSalesFromOrders(savedCostMap);
   }, []);
 
-  // The ledger day stays open until 12:00 AM and then rolls over to the new date by itself.
-  // There is no manual "close day" step: a day is closed simply because a newer date exists.
   useEffect(() => {
     const syncDateRollover = () => {
       const nextDate = getTodayDateStr();
@@ -396,32 +471,173 @@ export default function InventoryPage() {
     });
   }
 
-  function handleAddKhataEntry(e: FormEvent) {
+  function saveCustomerAccounts(nextList: CustomerKhataAccount[]) {
+    setCustomerAccounts(nextList);
+    safeJsonWrite(CUSTOMER_KHATA_BOOK_KEY, nextList);
+  }
+
+  function getInitials(fullName: string): string {
+    const parts = fullName.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "CU";
+    if (parts.length === 1) return (parts[0] || "CU").slice(0, 2).toUpperCase();
+    return `${parts[0]?.[0] || ""}${parts[1]?.[0] || ""}`.toUpperCase();
+  }
+
+  function formatWhatsAppPhone(rawPhone: string): string {
+    const digits = rawPhone.replace(/\D/g, "");
+    if (!digits) return "";
+    if (digits.startsWith("03") && digits.length === 11) {
+      return `92${digits.slice(1)}`;
+    }
+    return digits;
+  }
+
+  function openWhatsAppReminder(cust: CustomerKhataAccount) {
+    const waPhone = formatWhatsAppPhone(cust.phone);
+    if (!waPhone) {
+      alert("اس کسٹمر کا درست موبائل نمبر درج نہیں ہے۔");
+      return;
+    }
+    const storeLabel = storeInfo.name || "ہمارے اسٹور";
+    const msg = `السلام علیکم ${cust.name}،\n${storeLabel} کی طرف سے یاد دہانی: آپ کے کھاتے میں بقایا رقم ${formatMoney(
+      cust.balance
+    )} واجب الادا ہے (آخری تاریخ: ${cust.lastDate})۔ براہِ کرم جلد ادائیگی کر دیں۔ شکریہ!`;
+    const url = `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function handleCreateCustomerKhata(e: FormEvent) {
     e.preventDefault();
-    const title = khataTitle.trim();
-    const amt = Number(khataAmount);
-    if (!title || !Number.isFinite(amt) || amt <= 0) return;
+    const cName = newCustName.trim();
+    const cPhone = newCustPhone.trim();
+    const cAddress = newCustAddress.trim();
+    const opening = Math.max(0, Number(newCustOpeningUdhaar) || 0);
+    const entryDate = newCustDate || getTodayDateStr();
+    if (!cName) return;
 
     const now = new Date();
-    const nextDate = getTodayDateStr(now);
-    const entry: KhataEntry = {
-      id: `KHT-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
-      date: nextDate,
+    const initialTxs: CustomerKhataTx[] =
+      opening > 0
+        ? [
+            {
+              id: `TX-${Date.now()}`,
+              date: entryDate,
+              time: formatTimeStr(now),
+              type: "udhaar",
+              amount: opening,
+              note: "کھاتہ اوپننگ بیلنس",
+              balanceAfter: opening,
+            },
+          ]
+        : [];
+
+    const newAcc: CustomerKhataAccount = {
+      id: `CUST-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      name: cName,
+      phone: cPhone,
+      address: cAddress,
+      balance: opening,
+      lastDate: entryDate,
+      transactions: initialTxs,
+    };
+
+    const nextAccounts = [newAcc, ...customerAccounts];
+    saveCustomerAccounts(nextAccounts);
+    setSelectedCustomerId(newAcc.id);
+    setTodayDate(getTodayDateStr(now));
+    setActiveLedgerTab("khata");
+
+    if (opening > 0) {
+      const ledgerItem: KhataEntry = {
+        id: `KHT-${Date.now()}`,
+        date: entryDate,
+        time: formatTimeStr(now),
+        title: `${cName} (${cPhone || "-"}) — New Khata`,
+        entryType: "khata",
+        amount: opening,
+      };
+      setKhataEntries((prev) => {
+        const next = [ledgerItem, ...prev];
+        safeJsonWrite(KHATA_LEDGER_KEY, next);
+        return next;
+      });
+    }
+
+    setNewCustName("");
+    setNewCustPhone("");
+    setNewCustAddress("");
+    setNewCustOpeningUdhaar("");
+    setKhataModalMode("none");
+  }
+
+  function handleRecordCustomerTx(e: FormEvent) {
+    e.preventDefault();
+    const targetId = txCustomerId || selectedCustomerId || customerAccounts[0]?.id;
+    const amt = Number(txAmount);
+    if (!targetId || !Number.isFinite(amt) || amt <= 0) return;
+
+    const mode = khataModalMode === "received" ? "received" : "udhaar";
+    const entryDate = txDate || getTodayDateStr();
+    const now = new Date();
+    const cleanAmt = Math.round(amt * 100) / 100;
+
+    let targetName = "";
+    let targetPhone = "";
+
+    const updatedAccounts = customerAccounts.map((acc) => {
+      if (acc.id !== targetId) return acc;
+      targetName = acc.name;
+      targetPhone = acc.phone;
+      const nextBal =
+        mode === "received"
+          ? Math.round((acc.balance - cleanAmt) * 100) / 100
+          : Math.round((acc.balance + cleanAmt) * 100) / 100;
+
+      const tx: CustomerKhataTx = {
+        id: `TX-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+        date: entryDate,
+        time: formatTimeStr(now),
+        type: mode,
+        amount: cleanAmt,
+        note:
+          txNote.trim() ||
+          (mode === "received" ? "رقم وصول ہوئی" : "مزید ادھار"),
+        balanceAfter: nextBal,
+      };
+
+      return {
+        ...acc,
+        balance: nextBal,
+        lastDate: entryDate,
+        transactions: [tx, ...acc.transactions],
+      };
+    });
+
+    saveCustomerAccounts(updatedAccounts);
+    setSelectedCustomerId(targetId);
+    setTodayDate(getTodayDateStr(now));
+    setActiveLedgerTab("khata");
+
+    const ledgerItem: KhataEntry = {
+      id: `KHT-${Date.now()}`,
+      date: entryDate,
       time: formatTimeStr(now),
-      title,
-      entryType: khataType,
-      amount: Math.round(amt * 100) / 100,
+      title: `${targetName} (${targetPhone || "-"}) — ${
+        mode === "received" ? "Money Received" : "Udhaar"
+      }`,
+      entryType: mode === "received" ? "cash_in" : "khata",
+      amount: cleanAmt,
     };
 
     setKhataEntries((prev) => {
-      const next = [entry, ...prev];
+      const next = [ledgerItem, ...prev];
       safeJsonWrite(KHATA_LEDGER_KEY, next);
       return next;
     });
-    setTodayDate(nextDate);
-    setActiveLedgerTab("khata");
-    setKhataTitle("");
-    setKhataAmount("");
+
+    setTxAmount("");
+    setTxNote("");
+    setKhataModalMode("none");
   }
 
   async function syncSalesFromOrders(costMapArg: Record<string, number>) {
@@ -457,561 +673,8 @@ export default function InventoryPage() {
               uPrice,
               costMapArg
             );
-            const lineSale = Math.round(uPrice * qty * 100) / 100;
-            const lineCost = Math.round(uCost * qty * 100) / 100;
-            const lineProfit = Math.round((lineSale - lineCost) * 100) / 100;
-
-            builtSales.push({
-              id: String(it.id || `ORD-${billRef}-${idx}`),
-              date: ordDate,
-              time: ordTime,
-              billRef,
-              itemName: String(it.productName || "Sold Item"),
-              qty,
-              costPrice: uCost,
-              salePrice: uPrice,
-              totalSale: lineSale,
-              totalCost: lineCost,
-              profit: lineProfit,
-            });
-          });
-        } else {
-          const totalAmount = Number(ord.total ?? ord.subtotal ?? 0);
-          builtSales.push({
-            id: `ORD-${billRef}`,
-            date: ordDate,
-            time: ordTime,
-            billRef,
-            itemName: `Order #${billRef}`,
-            qty: 1,
-            costPrice: totalAmount,
-            salePrice: totalAmount,
-            totalSale: totalAmount,
-            totalCost: totalAmount,
-            profit: 0,
-          });
-        }
-      }
-
-      if (builtSales.length > 0) {
-        setSalesEntries(builtSales);
-        safeJsonWrite(SALES_LEDGER_KEY, builtSales);
-      }
-    } catch {}
-  }
-
-  async function loadStoreProfile() {
-    try {
-      const res = await apiFetch<StoreProfile>("/stores/current");
-      if (res && res.name) setStoreInfo(res);
-    } catch (err) {
-      console.error("Failed to load store profile", err);
-    }
-  }
-
-  async function loadProducts(costMapArg: Record<string, number> = productCostMap) {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await apiFetch<{ data: Product[] }>(`/products?t=${Date.now()}`);
-      if (res && res.data) {
-        setProducts(res.data);
-        res.data.forEach((p) => {
-          const existingCost = lookupUnitCost(
-            p.id,
-            p.sku,
-            parseFloat(p.price || "0") || 0,
-            costMapArg
-          );
-          if (
-            costMapArg[`id:${p.id}`] === undefined &&
-            (!p.sku || costMapArg[`sku:${p.sku.toLowerCase()}`] === undefined)
-          ) {
-            saveCostMapping(p.id, p.sku, existingCost);
-          }
-        });
-      } else {
-        setProducts([]);
-      }
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load products from server."
-      );
-      setProducts([]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleBarcodeLookup(code: string) {
-    const trimmed = code.trim();
-    setSku(trimmed);
-    if (!trimmed) return;
-
-    const found = products.find(
-      (p) =>
-        (p.sku && p.sku.toLowerCase() === trimmed.toLowerCase()) ||
-        p.id === trimmed
-    );
-
-    if (found) {
-      setName(found.name);
-      if (found.price) setSalePrice(found.price);
-      const knownCost = lookupUnitCost(
-        found.id,
-        found.sku,
-        parseFloat(found.price || "0") || 0
-      );
-      setCostPrice(String(knownCost));
-      setError(
-        `⚡ موجودہ پروڈکٹ ملی: ${found.name} — ہول سیل مقدار اور قیمت چیک کر کے سیو کریں۔`
-      );
-    }
-  }
-
-  async function startCameraScanner() {
-    setError("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-      });
-      streamRef.current = stream;
-      setCameraOpen(true);
-
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play();
-        }
-      }, 200);
-    } catch {
-      setError("کیمرہ تک رسائی نہیں مل سکی یا براؤزر سپورٹ نہیں کرتا۔");
-    }
-  }
-
-  function stopCamera() {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-    setCameraOpen(false);
-  }
-
-  async function captureAndScanWholesale() {
-    if (!videoRef.current || scanningPhoto) return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current || document.createElement("canvas");
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-    setScanningPhoto(true);
-    setError("📷 ہول سیل / مینوفیکچرر بل یا پروڈکٹ اسکین ہو رہا ہے...");
-
-    canvas.toBlob(
-      async (blob) => {
-        if (!blob) {
-          setScanningPhoto(false);
-          setError("❌ تصویر کیپچر نہیں ہو سکی، دوبارہ کوشش کریں۔");
-          return;
-        }
-
-        try {
-          const formData = new FormData();
-          formData.append("image", blob, "wholesale-bill.jpg");
-          formData.append("scan_type", "wholesale_purchase_bill");
-          formData.append("token", getToken() ?? "");
-
-          const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
-            method: "POST",
-            body: formData,
-          });
-
-          if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-          }
-
-          const raw = await res.json();
-          const payload = Array.isArray(raw) ? raw[0] : raw;
-
-          const billRefText = String(
-            payload?.supplier_name ??
-              payload?.manufacturer ??
-              payload?.invoice_no ??
-              payload?.bill_no ??
-              ""
-          ).trim();
-          if (billRefText) {
-            setSupplierOrBill(billRefText);
-          }
-
-          const rawItems = Array.isArray(payload?.items)
-            ? payload.items
-            : Array.isArray(payload?.bill_items)
-            ? payload.bill_items
-            : [];
-
-          if (rawItems.length > 0) {
-            const parsed: ScannedBillItem[] = rawItems
-              .map((it: Record<string, unknown>, idx: number) => {
-                const cVal = String(
-                  it?.cost_price ??
-                    it?.purchase_price ??
-                    it?.wholesale_price ??
-                    it?.rate ??
-                    it?.price ??
-                    "0"
-                ).trim();
-                const sVal = String(
-                  it?.sale_price ?? it?.retail_price ?? it?.price ?? cVal
-                ).trim();
-
-                return {
-                  name: String(
-                    it?.product_name ?? it?.item_name ?? it?.name ?? ""
-                  ).trim(),
-                  sku: String(
-                    it?.barcode ??
-                      it?.sku ??
-                      it?.code ??
-                      `WH-${Date.now().toString().slice(-4)}-${idx + 1}`
-                  ).trim(),
-                  costPrice: cVal,
-                  salePrice: sVal,
-                  qty:
-                    parseInt(
-                      String(it?.qty ?? it?.quantity ?? it?.stockQty ?? "1"),
-                      10
-                    ) || 1,
-                };
-              })
-              .filter((r: ScannedBillItem) => r.name.length > 0);
-
-            if (parsed.length > 0) {
-              setScannedBillItems(parsed);
-              const first = parsed[0];
-              if (first) {
-                setName(first.name);
-                setSku(first.sku);
-                setCostPrice(first.costPrice);
-                setSalePrice(first.salePrice);
-                setStockQty(String(first.qty));
-                collectBarcodeEntry(first.sku, "Barcode");
-              }
-              stopCamera();
-              setError(
-                `✔ ہول سیل بل سے ${parsed.length} آئٹمز مل گئیں! پہلی آئٹم فارم میں بھر دی گئی ہے۔`
-              );
-              return;
-            }
-          }
-
-          const extractedName = String(
-            payload?.product_name ?? payload?.item_name ?? payload?.name ?? ""
-          ).trim();
-          const extractedSku = String(
-            payload?.barcode ?? payload?.sku ?? payload?.code ?? ""
-          ).trim();
-          const extractedCost = String(
-            payload?.cost_price ??
-              payload?.purchase_price ??
-              payload?.wholesale_price ??
-              payload?.price ??
-              ""
-          ).trim();
-          const extractedSale = String(
-            payload?.sale_price ?? payload?.retail_price ?? payload?.price ?? ""
-          ).trim();
-          const extractedQty = String(
-            payload?.qty ?? payload?.quantity ?? payload?.stockQty ?? ""
-          ).trim();
-
-          if (extractedName) setName(extractedName);
-          if (extractedSku) {
-            setSku(extractedSku);
-            collectBarcodeEntry(extractedSku, "Barcode");
-          }
-          if (extractedCost) setCostPrice(extractedCost);
-          if (extractedSale) setSalePrice(extractedSale);
-          if (extractedQty) setStockQty(extractedQty);
-
-          stopCamera();
-          setError(
-            `✔ اسکین مکمل: ${extractedName || "آئٹم"} | کوڈ: ${
-              extractedSku || "-"
-            }`
-          );
-        } catch (err) {
-          console.error("Wholesale scan error:", err);
-          setError(
-            `❌ اسکین رسپانس میں خرابی (${
-              err instanceof Error ? err.message : "نامعلوم"
-            }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
-          );
-        } finally {
-          setScanningPhoto(false);
-        }
-      },
-      "image/jpeg",
-      0.85
-    );
-  }
-
-  async function saveWholesalePurchaseItem(params: {
-    itemName: string;
-    itemSku: string;
-    itemCostPrice: string;
-    itemSalePrice: string;
-    itemQty: number;
-    billLabel?: string;
-  }): Promise<Product | null> {
-    const cleanSku =
-      params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-    const parsedCost = parseFloat(params.itemCostPrice.trim() || "0") || 0;
-    const parsedSale =
-      parseFloat(
-        params.itemSalePrice.trim() || params.itemCostPrice.trim() || "0"
-      ) || 0;
-    const cleanQty = params.itemQty > 0 ? params.itemQty : 1;
-
-    const existingProduct = products.find(
-      (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
-    );
-    const nextStockQty =
-      (existingProduct ? Number(existingProduct.stockQty || 0) : 0) + cleanQty;
-
-    const response = await apiFetch<Product | { data: Product }>("/products", {
-      method: "POST",
-      body: JSON.stringify({
-        name: params.itemName.trim(),
-        sku: cleanSku,
-        price: String(parsedSale),
-        stockQty: nextStockQty,
-      }),
-    });
-
-    const createdProduct =
-      response && typeof response === "object" && "data" in response
-        ? (response as { data: Product }).data
-        : (response as Product);
-
-    if (createdProduct) {
-      saveCostMapping(createdProduct.id, createdProduct.sku, parsedCost);
-      setProducts((prev) => {
-        const exists = prev.findIndex((p) => p.id === createdProduct.id);
-        if (exists >= 0) {
-          return prev.map((p) =>
-            p.id === createdProduct.id ? createdProduct : p
-          );
-        }
-        return [createdProduct, ...prev];
-      });
-    } else {
-      saveCostMapping(undefined, cleanSku, parsedCost);
-    }
-
-    const now = new Date();
-    appendPurchaseRecord({
-      date: getTodayDateStr(now),
-      time: formatTimeStr(now),
-      supplierOrBill:
-        (params.billLabel || supplierOrBill).trim() || "Wholesale / Direct",
-      sku: cleanSku,
-      itemName: params.itemName.trim(),
-      qty: cleanQty,
-      costPrice: parsedCost,
-      salePrice: parsedSale,
-      totalPurchase: Math.round(parsedCost * cleanQty * 100) / 100,
-    });
-
-    setTodayDate(getTodayDateStr(now));
-
-    return createdProduct || null;
-  }
-
-  async function handleAddAllScannedBillItems() {
-    if (scannedBillItems.length === 0) return;
-    try {
-      for (const row of scannedBillItems) {
-        await saveWholesalePurchaseItem({
-          itemName: row.name,
-          itemSku: row.sku,
-          itemCostPrice: row.costPrice,
-          itemSalePrice: row.salePrice,
-          itemQty: row.qty,
-          billLabel: supplierOrBill || "Scanned Wholesale Bill",
-        });
-      }
-      setScannedBillItems([]);
-      setActiveLedgerTab("purchase");
-      await loadProducts();
-      setError(
-        "✔ ہول سیل بل کی تمام آئٹمز انونٹری اور Purchase Ledger میں ایڈ ہو گئیں!"
-      );
-    } catch (err) {
-      console.error("Failed to save scanned bill items", err);
-      setError("بل کی آئٹمز سیو کرنے میں خرابی ہوئی۔");
-    }
-  }
-
-  async function handleAddProduct(e: FormEvent) {
-    e.preventDefault();
-    if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
-      alert("براہ کرم پروڈکٹ کا نام اور قیمت درج کریں!");
-      return;
-    }
-
-    try {
-      const cleanCode =
-        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-      await saveWholesalePurchaseItem({
-        itemName: name.trim(),
-        itemSku: cleanCode,
-        itemCostPrice: costPrice.trim() || salePrice.trim(),
-        itemSalePrice: salePrice.trim() || costPrice.trim(),
-        itemQty: parseInt(stockQty, 10) || 1,
-        billLabel: supplierOrBill.trim() || "Wholesale / Direct",
-      });
-
-      collectBarcodeEntry(cleanCode, selectedChannel);
-
-      setName("");
-      setSku("");
-      setCostPrice("");
-      setSalePrice("");
-      setStockQty("100");
-      setActiveLedgerTab("purchase");
-      await loadProducts();
-      setError(
-        "✔ پروڈکٹ انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گئی ہے!"
-      );
-    } catch (err) {
-      console.error("Failed to add product", err);
-      setError("پروڈکٹ سیو کرنے میں خرابی ہوئی۔");
-    }
-  }
-
-  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const text = e.target?.result;
-      if (typeof text !== "string") return;
-
-      const lines = text.split("\n");
-      let importedCount = 0;
-
-      for (let i = 1; i < lines.length; i++) {
-        const rawLine = lines[i];
-        if (rawLine === undefined) continue;
-
-        const line = rawLine.trim();
-        if (!line) continue;
-
-        const cols = line.split(",");
-        const [
-          rawSku = "",
-          rawName = "",
-          rawPrice = "100",
-          rawStock = "50",
-          rawCost = "",
-        ] = cols.map((c) => c.replace(/["']/g, "").trim());
-
-        if (!rawName) continue;
-
-        const pSku =
-          rawSku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-        const parsedSale = Number(rawPrice);
-        const pSale =
-          !Number.isNaN(parsedSale) && parsedSale >= 0
-            ? String(parsedSale)
-            : "100";
-        const parsedCost = rawCost ? Number(rawCost) : parsedSale;
-        const pCost =
-          !Number.isNaN(parsedCost) && parsedCost >= 0
-            ? String(parsedCost)
-            : pSale;
-        const parsedStock = parseInt(rawStock, 10);
-        const pStock =
-          !Number.isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 50;
-
-        try {
-          const saved = await saveWholesalePurchaseItem({
-            itemName: rawName,
-            itemSku: pSku,
-            itemCostPrice: pCost,
-            itemSalePrice: pSale,
-            itemQty: pStock,
-            billLabel: "CSV Import",
-          });
-          if (saved) {
-            importedCount++;
-          }
-        } catch {}
-      }
-
-      alert(`کامیابی کے ساتھ ${importedCount} پروڈکٹس امپورٹ ہو گئی ہیں!`);
-      loadProducts();
-    };
-    reader.readAsText(file);
-  };
-
-  function exportToCSV() {
-    if (products.length === 0) {
-      alert("No products available to export.");
-      return;
-    }
-    const headers = [
-      "Barcode / SKU",
-      "Item Name",
-      "Cost Price (Rs)",
-      "Sale Price (Rs)",
-      "Stock Qty",
-      "Status",
-    ];
-    const rows = products.map((p) => {
-      const uCost = lookupUnitCost(
-        p.id,
-        p.sku,
-        parseFloat(p.price || "0") || 0
-      );
-      return [
-        `"${p.sku || ""}"`,
-        `"${p.name.replace(/"/g, '""')}"`,
-        uCost,
-        p.price,
-        p.stockQty,
-        p.stockQty > 5
-          ? "In Stock"
-          : p.stockQty > 0
-          ? "Low Stock"
-          : "Out of Stock",
-      ];
-    });
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    const safeStoreName = storeInfo.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "_");
-    link.setAttribute(
-      "download",
-      `${safeStoreName}_inventory_${new Date().toISOString().slice(0, 10)}.csv`
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }
-const filteredProducts = products.filter((p) => {
+            const
+  const filteredProducts = products.filter((p) => {
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
@@ -1498,7 +1161,7 @@ const filteredProducts = products.filter((p) => {
                 variant={activeLedgerTab === "khata" ? "default" : "outline"}
                 onClick={() => setActiveLedgerTab("khata")}
               >
-                Khata / Hisab ({khataEntries.length})
+                Khata / Hisab ({customerAccounts.length})
               </Button>
             </div>
           </div>
@@ -1570,72 +1233,358 @@ const filteredProducts = products.filter((p) => {
             </div>
           )}
 
-          {activeLedgerTab === "khata" && (
-            <div className="space-y-4">
-              <form
-                onSubmit={handleAddKhataEntry}
-                className="flex flex-wrap items-end gap-2"
-              >
-                <Input
-                  value={khataTitle}
-                  onChange={(e) => setKhataTitle(e.target.value)}
-                  placeholder="Entry description..."
-                  className="min-w-48 flex-1"
-                  required
-                />
-                <Input
-                  type="number"
-                  step="any"
-                  value={khataAmount}
-                  onChange={(e) => setKhataAmount(e.target.value)}
-                  placeholder="Amount (Rs)"
-                  className="w-36"
-                  required
-                />
-                <select
-                  value={khataType}
-                  onChange={(e) =>
-                    setKhataType(e.target.value as KhataEntryType)
-                  }
-                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
-                >
-                  <option value="khata">Khata Out</option>
-                  <option value="expense">Expense</option>
-                  <option value="cash_in">Cash In</option>
-                </select>
-                <Button type="submit">Add Entry</Button>
-              </form>
+          {activeLedgerTab === "khata" && (() => {
+            const totalToCollect = customerAccounts.reduce(
+              (sum, c) => sum + (c.balance > 0 ? c.balance : 0),
+              0
+            );
+            const activeDebtors = customerAccounts.filter((c) => c.balance > 0);
+            const filteredCustomers = customerAccounts.filter((c) => {
+              const q = khataSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                c.name.toLowerCase().includes(q) ||
+                c.phone.toLowerCase().includes(q) ||
+                c.address.toLowerCase().includes(q)
+              );
+            });
+            const activeCustomer =
+              customerAccounts.find((c) => c.id === selectedCustomerId) ||
+              filteredCustomers[0] ||
+              null;
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                      <th className="py-2 pr-3">Date / Time</th>
-                      <th className="py-2 pr-3">Description</th>
-                      <th className="py-2 pr-3">Type</th>
-                      <th className="py-2">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {khataEntries.map((row) => (
-                      <tr key={row.id} className="border-b border-slate-100">
-                        <td className="py-2 pr-3 text-xs">
-                          {row.date} {row.time}
-                        </td>
-                        <td className="py-2 pr-3">{row.title}</td>
-                        <td className="py-2 pr-3 uppercase text-xs">
-                          {row.entryType}
-                        </td>
-                        <td className="py-2 font-semibold">
-                          {formatMoney(row.amount)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            return (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-[#f7f5ee] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-slate-600">
+                        To collect (کل وصولی)
+                      </p>
+                      <p className="text-2xl font-bold text-slate-900">
+                        {formatMoney(totalToCollect)}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs font-medium text-slate-600">
+                        from {activeDebtors.length} customers
+                      </span>
+                      {activeDebtors.length > 0 && activeDebtors[0] && (
+                        <div className="mt-1">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => openWhatsAppReminder(activeDebtors[0]!)}
+                            className="border-rose-200 bg-rose-50 text-xs font-semibold text-rose-900 hover:bg-rose-100"
+                          >
+                            💬 Remind on WhatsApp
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <Input
+                      value={khataSearch}
+                      onChange={(e) => setKhataSearch(e.target.value)}
+                      placeholder="Find customer (نام، موبائل یا ایڈریس تلاش کریں)..."
+                      className="bg-white"
+                    />
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {filteredCustomers.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-slate-500">
+                        کوئی کسٹمر نہیں ملا۔ نیچے &quot;+ Customer&quot; سے نیا کھاتہ کھولیں۔
+                      </p>
+                    ) : (
+                      filteredCustomers.map((cust) => {
+                        const isSelected = activeCustomer?.id === cust.id;
+                        return (
+                          <div
+                            key={cust.id}
+                            onClick={() => setSelectedCustomerId(cust.id)}
+                            className={`flex cursor-pointer items-center justify-between rounded-lg border bg-white p-3 transition ${
+                              isSelected
+                                ? "border-emerald-600 ring-1 ring-emerald-600"
+                                : "border-slate-200 hover:border-slate-300"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-700">
+                                {getInitials(cust.name)}
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {cust.name}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {cust.phone || "No phone"}
+                                  {cust.address ? ` • ${cust.address}` : ""} • Last:{" "}
+                                  {cust.lastDate}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-sm font-bold ${
+                                  cust.balance > 0
+                                    ? "text-rose-700"
+                                    : "text-emerald-700"
+                                }`}
+                              >
+                                {formatMoney(cust.balance)}
+                              </span>
+                              {cust.balance > 0 && (
+                                <button
+                                  type="button"
+                                  title="Send WhatsApp Reminder"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openWhatsAppReminder(cust);
+                                  }}
+                                  className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                                >
+                                  💬
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("received");
+                      }}
+                    >
+                      Money received (وصولی)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("udhaar");
+                      }}
+                    >
+                      + Udhaar / Bill (ادھار)
+                    </Button>
+                    <Button
+                      type="button"
+                      className="bg-emerald-800 text-white hover:bg-emerald-900"
+                      onClick={() => {
+                        setNewCustDate(getTodayDateStr());
+                        setKhataModalMode("new_customer");
+                      }}
+                    >
+                      + Customer (نیا کھاتہ)
+                    </Button>
+                  </div>
+                </div>
+
+                {khataModalMode === "new_customer" && (
+                  <form
+                    onSubmit={handleCreateCustomerKhata}
+                    className="space-y-3 rounded-lg border border-emerald-300 bg-emerald-50/60 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-emerald-950">
+                        نیا کسٹمر کھاتہ کھولیں (+ Customer)
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <Input
+                        value={newCustName}
+                        onChange={(e) => setNewCustName(e.target.value)}
+                        placeholder="کسٹمر کا نام *"
+                        required
+                      />
+                      <Input
+                        value={newCustPhone}
+                        onChange={(e) => setNewCustPhone(e.target.value)}
+                        placeholder="موبائل نمبر (0300...)"
+                      />
+                      <Input
+                        value={newCustAddress}
+                        onChange={(e) => setNewCustAddress(e.target.value)}
+                        placeholder="مکمل ایڈریس"
+                      />
+                      <Input
+                        type="number"
+                        step="any"
+                        value={newCustOpeningUdhaar}
+                        onChange={(e) => setNewCustOpeningUdhaar(e.target.value)}
+                        placeholder="ابتدائی ادھار (Rs)"
+                      />
+                      <Input
+                        type="date"
+                        value={newCustDate}
+                        onChange={(e) => setNewCustDate(e.target.value)}
+                      />
+                    </div>
+                    <Button type="submit">Save Customer Khata</Button>
+                  </form>
+                )}
+
+                {(khataModalMode === "received" || khataModalMode === "udhaar") && (
+                  <form
+                    onSubmit={handleRecordCustomerTx}
+                    className="space-y-3 rounded-lg border border-slate-300 bg-slate-50 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-slate-900">
+                        {khataModalMode === "received"
+                          ? "وصول شدہ رقم درج کریں (Money Received)"
+                          : "نیا ادھار / بل درج کریں (+ Udhaar)"}
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <select
+                        value={txCustomerId || activeCustomer?.id || ""}
+                        onChange={(e) => setTxCustomerId(e.target.value)}
+                        className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                        required
+                      >
+                        {customerAccounts.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.phone || "No #"}) — Bal: {c.balance}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        step="any"
+                        value={txAmount}
+                        onChange={(e) => setTxAmount(e.target.value)}
+                        placeholder="رقم (Rs) *"
+                        required
+                      />
+                      <Input
+                        value={txNote}
+                        onChange={(e) => setTxNote(e.target.value)}
+                        placeholder="تفصیل (مثلاً کیش وصولی / بل #)"
+                      />
+                      <Input
+                        type="date"
+                        value={txDate}
+                        onChange={(e) => setTxDate(e.target.value)}
+                      />
+                      <Button type="submit">
+                        {khataModalMode === "received"
+                          ? "Save Received"
+                          : "Save Udhaar"}
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {activeCustomer && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">
+                          تاریخ وار کھاتہ تفصیل: {activeCustomer.name}
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          موبائل: {activeCustomer.phone || "-"} | ایڈریس:{" "}
+                          {activeCustomer.address || "-"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-slate-100 px-3 py-1 text-xs font-bold text-slate-900">
+                          بقایا بیلنس: {formatMoney(activeCustomer.balance)}
+                        </span>
+                        {activeCustomer.balance > 0 && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => openWhatsAppReminder(activeCustomer)}
+                          >
+                            💬 WhatsApp Reminder
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                            <th className="py-2 pr-3">Date / Time</th>
+                            <th className="py-2 pr-3">تفصیل (Note)</th>
+                            <th className="py-2 pr-3">ادھار (Given)</th>
+                            <th className="py-2 pr-3">وصول (Received)</th>
+                            <th className="py-2">بقایا (Balance)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeCustomer.transactions.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={5}
+                                className="py-3 text-center text-xs text-slate-500"
+                              >
+                                ابھی تک اس کسٹمر کا کوئی لین دین درج نہیں ہے۔
+                              </td>
+                            </tr>
+                          ) : (
+                            activeCustomer.transactions.map((tx) => (
+                              <tr key={tx.id} className="border-b border-slate-100">
+                                <td className="py-2 pr-3 text-xs">
+                                  {tx.date} {tx.time}
+                                </td>
+                                <td className="py-2 pr-3">{tx.note}</td>
+                                <td className="py-2 pr-3 text-rose-700">
+                                  {tx.type === "udhaar"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 pr-3 text-emerald-700">
+                                  {tx.type === "received"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 font-semibold">
+                                  {formatMoney(tx.balanceAfter)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="border-t border-slate-200 pt-4">
             <h3 className="mb-2 text-xs font-bold uppercase text-slate-600">
@@ -1664,7 +1613,7 @@ const filteredProducts = products.filter((p) => {
                       </td>
                       <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
                       <td className="py-2">
-                       <Badge variant={day.isClosed ? "default" : "success"}>
+                        <Badge variant={day.isClosed ? "default" : "success"}>
                           {day.isClosed ? "Closed" : "Open"}
                         </Badge>
                       </td>
