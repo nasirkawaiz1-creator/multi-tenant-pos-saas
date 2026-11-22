@@ -2207,4 +2207,4 @@ export default function InventoryPage() {
     </AppShell>
   );
 }
-}
+
