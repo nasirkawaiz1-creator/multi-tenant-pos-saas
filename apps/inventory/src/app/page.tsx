@@ -238,6 +238,18 @@ export default function InventoryPage() {
 
   const [purchaseEntries, setPurchaseEntries] = useState<PurchaseEntry[]>([]);
   const [salesEntries, setSalesEntries] = useState<SaleEntry[]>([]);
+  const [dailySaleEntries, setDailySaleEntries] = useState<SaleEntry[]>([]);
+  const [saleFilterDate, setSaleFilterDate] = useState<string>(() =>
+    getTodayDateStr()
+  );
+  const [quickSaleItemName, setQuickSaleItemName] = useState("");
+  const [quickSaleQty, setQuickSaleQty] = useState("1");
+  const [quickSalePrice, setQuickSalePrice] = useState("");
+  const [quickSaleBillRef, setQuickSaleBillRef] = useState("");
+  const [quickSaleDate, setQuickSaleDate] = useState<string>(() =>
+    getTodayDateStr()
+  );
+
   const [khataEntries, setKhataEntries] = useState<KhataEntry[]>([]);
   const [productCostMap, setProductCostMap] = useState<Record<string, number>>({});
   const productCostMapRef = useRef<Record<string, number>>({});
@@ -295,9 +307,7 @@ export default function InventoryPage() {
           dataUrl
         );
       }
-    } catch {
-      // ignore storage quota limits on large photos
-    }
+    } catch {}
   }
 
   function loadTenantLocalData(tenantKey: string): Record<string, number> {
@@ -338,6 +348,7 @@ export default function InventoryPage() {
 
     setPurchaseEntries(savedPurchases);
     setSalesEntries(savedSales);
+    setDailySaleEntries(savedSales);
     setKhataEntries(savedKhata);
     setCustomerAccounts(savedCustomers);
     safeJsonWrite(
@@ -447,7 +458,14 @@ export default function InventoryPage() {
 
   useEffect(() => {
     const syncDateRollover = () => {
-      setTodayDate(getTodayDateStr());
+      const nextToday = getTodayDateStr();
+      setTodayDate((prev) => {
+        if (prev !== nextToday) {
+          setSaleFilterDate(nextToday);
+          setQuickSaleDate(nextToday);
+        }
+        return nextToday;
+      });
     };
     const timer = window.setInterval(syncDateRollover, MIDNIGHT_ROLLOVER_INTERVAL_MS);
     return () => window.clearInterval(timer);
@@ -735,6 +753,111 @@ export default function InventoryPage() {
     });
   }
 
+  function recordDailySaleItem(params: {
+    itemName: string;
+    sku?: string;
+    qty: number;
+    salePrice: number;
+    costPrice?: number;
+    billRef?: string;
+    dateStr?: string;
+  }) {
+    const cleanName = params.itemName.trim();
+    if (!cleanName) return;
+    const now = new Date();
+    const activeDate = params.dateStr || getTodayDateStr(now);
+    const qNum = Math.max(1, Number(params.qty) || 1);
+    const sPrice = Math.max(0, Number(params.salePrice) || 0);
+    const matchedProd = products.find(
+      (p) =>
+        p.name.trim().toLowerCase() === cleanName.toLowerCase() ||
+        (params.sku &&
+          p.sku &&
+          p.sku.trim().toLowerCase() === params.sku.trim().toLowerCase())
+    );
+    const uCost =
+      params.costPrice !== undefined
+        ? Math.max(0, Number(params.costPrice) || 0)
+        : lookupUnitCost(matchedProd?.id, matchedProd?.sku, sPrice);
+
+    const totalSale = Math.round(sPrice * qNum * 100) / 100;
+    const totalCost = Math.round(uCost * qNum * 100) / 100;
+    const profit = Math.round((totalSale - totalCost) * 100) / 100;
+
+    const newSaleRow: SaleEntry = {
+      id: `SALE-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      date: activeDate,
+      time: formatTimeStr(now),
+      billRef: params.billRef?.trim() || "QR / Checkout Bill",
+      itemName: cleanName,
+      qty: qNum,
+      costPrice: uCost,
+      salePrice: sPrice,
+      totalSale,
+      totalCost,
+      profit,
+    };
+
+    const storageKey = buildTenantStorageKey(
+      SALES_LEDGER_BASE_KEY,
+      activeTenantIdRef.current
+    );
+
+    setDailySaleEntries((prev) => {
+      const next = [newSaleRow, ...prev];
+      safeJsonWrite(storageKey, next);
+      return next;
+    });
+
+    setSalesEntries((prev) => {
+      const next = [newSaleRow, ...prev];
+      safeJsonWrite(storageKey, next);
+      return next;
+    });
+  }
+
+  function moveStockItemToDailySale(prod: Product) {
+    const qtyVal = Math.max(1, Number(prod.stockQty || 1));
+    const priceVal = parseNumericValue(prod.price, 0);
+    recordDailySaleItem({
+      itemName: prod.name,
+      sku: prod.sku,
+      qty: qtyVal,
+      salePrice: priceVal,
+      billRef: "Moved from Stock (QR/Checkout)",
+    });
+    setProducts((prev) => prev.filter((item) => item.id !== prod.id));
+    setError(
+      `✔ "${prod.name}" کو STOCK سے نکال کر DAILY SALE خانے میں منتقل کر دیا گیا ہے۔`
+    );
+  }
+
+  function handleQuickSaleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!quickSaleItemName.trim()) {
+      alert("براہِ کرم بیچی گئی آئٹم کا نام لکھیں۔");
+      return;
+    }
+    const qNum = Math.max(1, parseInt(quickSaleQty, 10) || 1);
+    const sNum = Math.max(0, parseNumericValue(quickSalePrice, 0));
+    const targetDate = quickSaleDate || getTodayDateStr();
+
+    recordDailySaleItem({
+      itemName: quickSaleItemName.trim(),
+      qty: qNum,
+      salePrice: sNum,
+      billRef: quickSaleBillRef.trim() || "QR / Counter Sale",
+      dateStr: targetDate,
+    });
+
+    setSaleFilterDate(targetDate);
+    setQuickSaleItemName("");
+    setQuickSaleQty("1");
+    setQuickSalePrice("");
+    setQuickSaleBillRef("");
+    setError(`✔ سیل (${targetDate}) DAILY SALE خانے میں محفوظ ہو گئی ہے۔`);
+  }
+
   function saveCustomerAccounts(nextList: CustomerKhataAccount[]) {
     const storageKey = buildTenantStorageKey(
       CUSTOMER_KHATA_BOOK_BASE_KEY,
@@ -931,7 +1054,6 @@ export default function InventoryPage() {
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // بل کی تصویر محفوظ کریں تاکہ سرور ایرر یا 502 کی صورت میں بھی تصویر ضائع نہ ہو
     try {
       const capturedDataUrl = canvas.toDataURL("image/jpeg", 0.78);
       persistBillImageDataUrl(capturedDataUrl);
@@ -1249,7 +1371,9 @@ export default function InventoryPage() {
       },
       "image/jpeg",
       0.78
-    async function saveWholesalePurchaseItem(params: {
+    );
+  }
+  async function saveWholesalePurchaseItem(params: {
     itemName: string;
     itemSku: string;
     itemCostPrice: string;
@@ -1546,7 +1670,6 @@ export default function InventoryPage() {
             itemCostPrice: pCost,
             itemSalePrice: pSale,
             itemQty: pStock,
-            itemAmount: Math.round(Number(pCost) * pStock * 100) / 100,
             billLabel: "CSV Import",
           });
           if (saved.saved) {
@@ -1629,11 +1752,23 @@ export default function InventoryPage() {
   const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
   const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
 
-  const todaySales = salesEntries.filter((e) => e.date === todayDate);
+  const todaySales = dailySaleEntries.filter((e) => e.date === todayDate);
   const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
   const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
   const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
   const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
+
+  const filteredDailySales = dailySaleEntries.filter((e) =>
+    saleFilterDate ? e.date === saleFilterDate : true
+  );
+  const filteredDailySaleTotal = filteredDailySales.reduce(
+    (s, e) => s + e.totalSale,
+    0
+  );
+  const filteredDailySaleQty = filteredDailySales.reduce(
+    (s, e) => s + e.qty,
+    0
+  );
 
   const todayKhata = khataEntries.filter((e) => e.date === todayDate);
   const todayCashIn = todayKhata
@@ -1647,7 +1782,7 @@ export default function InventoryPage() {
   const allDates = Array.from(
     new Set([
       ...purchaseEntries.map((p) => p.date),
-      ...salesEntries.map((s) => s.date),
+      ...dailySaleEntries.map((s) => s.date),
       ...khataEntries.map((k) => k.date),
       todayDate,
     ])
@@ -1655,7 +1790,7 @@ export default function InventoryPage() {
 
   const dateClosingSummary = allDates.map((d) => {
     const pRows = purchaseEntries.filter((p) => p.date === d);
-    const sRows = salesEntries.filter((s) => s.date === d);
+    const sRows = dailySaleEntries.filter((s) => s.date === d);
     const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
     const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
     const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
@@ -1732,7 +1867,7 @@ export default function InventoryPage() {
 
       <PageHeader
         title="STOCK — Inventory & Wholesale Purchase"
-        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور سیل / کھاتہ کے الگ خانے۔"
+        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور ڈیلی سیل / اسٹاک کے الگ خانے۔"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1786,7 +1921,7 @@ export default function InventoryPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-semibold uppercase text-slate-500">
-              SALE — Today Sold Qty
+              DAILY SALE — Today Sold Qty
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -1797,7 +1932,7 @@ export default function InventoryPage() {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-semibold uppercase text-slate-500">
-              SALE — Today Sales Total
+              DAILY SALE — Today Sales Total
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -1827,6 +1962,137 @@ export default function InventoryPage() {
         </Card>
       </div>
 
+      {/* ڈیلی سیل کا علیحدہ خانہ (DAILY SALE BOX) */}
+      <Card className="mb-6 border-emerald-300 bg-emerald-50/30">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle>
+                DAILY SALE — علیحدہ سیل خانہ ({filteredDailySales.length})
+              </CardTitle>
+              <p className="mt-1 text-xs text-slate-600">
+                یہاں صرف گاہکوں کو بیچی گئی آئٹمز / QR / چیک آؤٹ سیل تاریخ کے حساب سے دکھائی جاتی ہیں۔
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded bg-emerald-100 px-3 py-1 font-semibold text-emerald-900">
+                Today Sale ({todayDate}): {formatMoney(todaySalesTotal)}
+              </span>
+              <span className="rounded bg-blue-100 px-3 py-1 font-semibold text-blue-900">
+                Selected Date ({saleFilterDate || "All"}):{" "}
+                {formatMoney(filteredDailySaleTotal)} ({filteredDailySaleQty} qty)
+              </span>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs font-semibold text-slate-700">
+                تاریخ منتخب کریں:
+              </label>
+              <Input
+                type="date"
+                value={saleFilterDate}
+                onChange={(e) => setSaleFilterDate(e.target.value)}
+                className="w-auto bg-white text-xs"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSaleFilterDate(todayDate)}
+              >
+                آج ({todayDate})
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSaleFilterDate("")}
+              >
+                تمام تاریخیں
+              </Button>
+            </div>
+          </div>
+
+          <form
+            onSubmit={handleQuickSaleSubmit}
+            className="grid gap-2 rounded-lg border border-emerald-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-6"
+          >
+            <Input
+              value={quickSaleItemName}
+              onChange={(e) => setQuickSaleItemName(e.target.value)}
+              placeholder="بیچی گئی آئٹم کا نام *"
+              required
+            />
+            <Input
+              type="number"
+              min="1"
+              value={quickSaleQty}
+              onChange={(e) => setQuickSaleQty(e.target.value)}
+              placeholder="مقدار"
+            />
+            <Input
+              type="number"
+              step="any"
+              value={quickSalePrice}
+              onChange={(e) => setQuickSalePrice(e.target.value)}
+              placeholder="سیل ریٹ (Rs)"
+            />
+            <Input
+              value={quickSaleBillRef}
+              onChange={(e) => setQuickSaleBillRef(e.target.value)}
+              placeholder="بل / QR حوالہ"
+            />
+            <Input
+              type="date"
+              value={quickSaleDate}
+              onChange={(e) => setQuickSaleDate(e.target.value)}
+            />
+            <Button type="submit">+ Daily Sale میں ڈالیں</Button>
+          </form>
+
+          {filteredDailySales.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              اس تاریخ ({saleFilterDate || "تمام"}) کے لیے کوئی سیل ریکارڈ نہیں ہے۔
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3 pl-3">Date / Time</th>
+                    <th className="py-2 pr-3">Bill / Ref</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Rate</th>
+                    <th className="py-2 pr-3">Total Sale</th>
+                    <th className="py-2 pr-3">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredDailySales.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 pl-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.billRef}</td>
+                      <td className="py-2 pr-3 font-medium">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.salePrice)}</td>
+                      <td className="py-2 pr-3 font-semibold text-emerald-800">
+                        {formatMoney(row.totalSale)}
+                      </td>
+                      <td className="py-2 pr-3 font-semibold text-blue-700">
+                        {formatMoney(row.profit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -2171,72 +2437,17 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      <Card className="mb-6 border-emerald-200">
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <CardTitle>
-                SALE BOX — Separate Sales Record ({salesEntries.length})
-              </CardTitle>
-              <p className="mt-1 text-xs text-slate-500">
-                سیل کا علیحدہ خانہ — اسٹاک اور خرید کے ساتھ مکس نہیں کیا گیا۔
-              </p>
-            </div>
-            <div className="flex items-center gap-3 text-xs">
-              <span className="rounded bg-emerald-50 px-3 py-1 font-semibold text-emerald-800">
-                Today Sales: {formatMoney(todaySalesTotal)}
-              </span>
-              <span className="rounded bg-blue-50 px-3 py-1 font-semibold text-blue-800">
-                Today Profit: {formatMoney(todayNetProfit)}
-              </span>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {salesEntries.length === 0 ? (
-            <p className="text-sm text-slate-500">
-              ابھی کوئی سیل ریکارڈ درج نہیں ہے۔
-            </p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                    <th className="py-2 pr-3">Date / Time</th>
-                    <th className="py-2 pr-3">Bill</th>
-                    <th className="py-2 pr-3">Item</th>
-                    <th className="py-2 pr-3">Qty</th>
-                    <th className="py-2 pr-3">Sale</th>
-                    <th className="py-2">Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {salesEntries.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 text-xs">
-                        {row.date} {row.time}
-                      </td>
-                      <td className="py-2 pr-3">{row.billRef}</td>
-                      <td className="py-2 pr-3">{row.itemName}</td>
-                      <td className="py-2 pr-3">{row.qty}</td>
-                      <td className="py-2 pr-3">{formatMoney(row.totalSale)}</td>
-                      <td className="py-2 font-semibold text-emerald-700">
-                        {formatMoney(row.profit)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
+      {/* اسٹاک کا علیحدہ خانہ (STOCK BOX) */}
       <Card className="mb-6">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <CardTitle>STOCK — Items ({filteredProducts.length})</CardTitle>
+              <CardTitle>
+                STOCK — علیحدہ اسٹاک خانہ ({filteredProducts.length})
+              </CardTitle>
+              <p className="mt-1 text-xs text-slate-500">
+                اگر کوئی پرانی QR/چیک آؤٹ سیل آئٹم یہاں دکھ رہی ہو تو &quot;→ Sale&quot; دبا کر اسے DAILY SALE میں بھیج دیں[cite: 2]۔
+              </p>
               <p className="mt-1 text-xs font-medium text-slate-600">
                 Total Stock Value: <strong>{formatMoney(totalStockValue)}</strong>
               </p>
@@ -2265,7 +2476,8 @@ export default function InventoryPage() {
                     <th className="py-2 pr-4">Sale Price</th>
                     <th className="py-2 pr-4">Stock</th>
                     <th className="py-2 pr-4">Total</th>
-                    <th className="py-2">Status</th>
+                    <th className="py-2 pr-4">Status</th>
+                    <th className="py-2">Sale Move</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2291,7 +2503,7 @@ export default function InventoryPage() {
                         <td className="py-2 pr-4 font-semibold">
                           {formatMoney(rowTotal)}
                         </td>
-                        <td className="py-2">
+                        <td className="py-2 pr-4">
                           <Badge
                             variant={
                               p.stockQty > 5
@@ -2307,6 +2519,15 @@ export default function InventoryPage() {
                               ? "Low Stock"
                               : "Out of Stock"}
                           </Badge>
+                        </td>
+                        <td className="py-2">
+                          <button
+                            type="button"
+                            onClick={() => moveStockItemToDailySale(p)}
+                            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-100"
+                          >
+                            → Sale
+                          </button>
                         </td>
                       </tr>
                     );
@@ -2343,7 +2564,7 @@ export default function InventoryPage() {
                 variant={activeLedgerTab === "sales" ? "default" : "outline"}
                 onClick={() => setActiveLedgerTab("sales")}
               >
-                Sales ({salesEntries.length})
+                Daily Sales ({dailySaleEntries.length})
               </Button>
               <Button
                 type="button"
@@ -2403,7 +2624,7 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {salesEntries.map((row) => (
+                  {dailySaleEntries.map((row) => (
                     <tr key={row.id} className="border-b border-slate-100">
                       <td className="py-2 pr-3 text-xs">
                         {row.date} {row.time}
@@ -2832,306 +3053,4 @@ export default function InventoryPage() {
       </Card>
     </AppShell>
   );
-});
-  }
-  async function saveWholesalePurchaseItem(params: {
-    itemName: string;
-    itemSku: string;
-    itemCostPrice: string;
-    itemSalePrice: string;
-    itemQty: number;
-    itemAmount?: number;
-    billLabel?: string;
-  }): Promise<{ saved: boolean; backendError?: string }> {
-    const cleanName = params.itemName.trim();
-    const cleanSku =
-      params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-    const parsedCost = parseNumericValue(params.itemCostPrice.trim(), 0);
-    const parsedSale =
-      params.itemSalePrice.trim() !== ""
-        ? parseNumericValue(params.itemSalePrice.trim(), parsedCost)
-        : parsedCost;
-    const cleanQty = params.itemQty > 0 ? params.itemQty : 1;
-
-    const effectiveUnitCost =
-      parsedCost > 0
-        ? parsedCost
-        : params.itemAmount !== undefined && params.itemAmount > 0 && cleanQty > 0
-        ? Math.round((params.itemAmount / cleanQty) * 100) / 100
-        : 0;
-
-    const lineTotal =
-      effectiveUnitCost > 0
-        ? Math.round(effectiveUnitCost * cleanQty * 100) / 100
-        : params.itemAmount !== undefined && params.itemAmount > 0
-        ? Math.round(params.itemAmount * 100) / 100
-        : 0;
-
-    const existingProduct = products.find(
-      (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
-    );
-    const nextStockQty =
-      (existingProduct ? Number(existingProduct.stockQty || 0) : 0) + cleanQty;
-
-    const now = new Date();
-    const activeDate = getTodayDateStr(now);
-
-    saveCostMapping(existingProduct?.id, cleanSku, effectiveUnitCost);
-    appendPurchaseRecord({
-      date: activeDate,
-      time: formatTimeStr(now),
-      supplierOrBill:
-        (params.billLabel || supplierOrBill).trim() || "New Stock / Wholesale",
-      sku: cleanSku,
-      itemName: cleanName,
-      qty: cleanQty,
-      costPrice: effectiveUnitCost,
-      salePrice: parsedSale,
-      totalPurchase: lineTotal,
-    });
-
-    setProducts((prev) => {
-      const idx = prev.findIndex(
-        (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
-      );
-      if (idx >= 0 && prev[idx]) {
-        const current = prev[idx];
-        return prev.map((item, i) =>
-          i === idx
-            ? {
-                ...current,
-                name: cleanName || current.name,
-                price: String(parsedSale),
-                stockQty: nextStockQty,
-              }
-            : item
-        );
-      }
-      return [
-        {
-          id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
-          name: cleanName,
-          sku: cleanSku,
-          price: String(parsedSale),
-          stockQty: nextStockQty,
-        } as unknown as Product,
-        ...prev,
-      ];
-    });
-
-    setTodayDate(activeDate);
-
-    try {
-      const response = await Promise.race([
-        apiFetch<Product | { data: Product }>("/products", {
-          method: "POST",
-          body: JSON.stringify({
-            name: cleanName,
-            sku: cleanSku,
-            price: String(parsedSale),
-            stockQty: nextStockQty,
-          }),
-        }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("API timeout (5s)")), 5000)
-        ),
-      ]);
-
-      const createdProduct =
-        response && typeof response === "object" && "data" in response
-          ? (response as { data: Product }).data
-          : (response as Product);
-
-      if (createdProduct && createdProduct.id) {
-        saveCostMapping(createdProduct.id, createdProduct.sku, effectiveUnitCost);
-        setProducts((prev) => {
-          const withoutLocal = prev.filter(
-            (p) =>
-              !String(p.id).startsWith("LOCAL-") ||
-              (p.sku || "").toLowerCase() !== cleanSku.toLowerCase()
-          );
-          const exists = withoutLocal.findIndex((p) => p.id === createdProduct.id);
-          if (exists >= 0) {
-            return withoutLocal.map((p) =>
-              p.id === createdProduct.id ? createdProduct : p
-            );
-          }
-          return [createdProduct, ...withoutLocal];
-        });
-      }
-
-      return { saved: true };
-    } catch (err) {
-      return {
-        saved: true,
-        backendError: err instanceof Error ? err.message : "Server sync failed",
-      };
-    }
-  }
-
-  async function handleAddAllScannedBillItems() {
-    if (scannedBillItems.length === 0 || savingStock) return;
-    setSavingStock(true);
-    setError(
-      "⏳ بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ کی جا رہی ہیں..."
-    );
-    try {
-      const activeBillLabel = supplierOrBill.trim() || "Scanned Stock Bill";
-      let failCount = 0;
-      let lastBackendErr = "";
-
-      for (const row of scannedBillItems) {
-        const res = await saveWholesalePurchaseItem({
-          itemName: row.name,
-          itemSku: row.sku,
-          itemCostPrice: row.costPrice,
-          itemSalePrice: row.salePrice,
-          itemQty: row.qty,
-          itemAmount: row.amount,
-          billLabel: activeBillLabel,
-        });
-        if (res.backendError) {
-          failCount++;
-          lastBackendErr = res.backendError;
-        }
-      }
-
-      setScannedBillItems([]);
-      setScannedBillTotal(null);
-      setEditingIndex(null);
-      setActiveLedgerTab("purchase");
-
-      if (failCount === 0) {
-        setError(
-          `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ ہو گئیں!`
-        );
-      } else {
-        setError(
-          `✔ آئٹمز لوکل STOCK / Purchase Ledger میں محفوظ ہو گئیں، تاہم سرور پر ${failCount} آئٹمز سنک نہیں ہو سکیں (${lastBackendErr})۔`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to save scanned bill items", err);
-      setError("❌ بل کی آئٹمز سیو کرنے میں خرابی ہوئی۔");
-    } finally {
-      setSavingStock(false);
-    }
-  }
-
-  async function handleAddProduct(e: FormEvent) {
-    e.preventDefault();
-    if (savingStock) return;
-    if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
-      alert("براہ کرم آئٹم اور قیمت درج کریں!");
-      return;
-    }
-
-    setSavingStock(true);
-    setError("⏳ نیا اسٹاک محفوظ کیا جا رہا ہے...");
-    try {
-      const cleanCode =
-        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-      const qtyNum = parseInt(stockQty, 10) || 1;
-      const costNum = parseNumericValue(
-        costPrice.trim() || salePrice.trim(),
-        0
-      );
-      const saleNum = parseNumericValue(
-        salePrice.trim() || costPrice.trim(),
-        costNum
-      );
-      const computedLineAmount = Math.round(costNum * qtyNum * 100) / 100;
-
-      const res = await saveWholesalePurchaseItem({
-        itemName: name.trim(),
-        itemSku: cleanCode,
-        itemCostPrice: String(costNum),
-        itemSalePrice: String(saleNum),
-        itemQty: qtyNum,
-        itemAmount: computedLineAmount,
-        billLabel: supplierOrBill.trim() || "New Stock Entry",
-      });
-
-      collectBarcodeEntry(cleanCode, selectedChannel);
-
-      setName("");
-      setSku("");
-      setCostPrice("");
-      setSalePrice("");
-      setStockQty("100");
-      setActiveLedgerTab("purchase");
-
-      if (!res.backendError) {
-        setError(
-          "✔ نیا اسٹاک انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گیا ہے!"
-        );
-      } else {
-        setError(
-          `✔ اسٹاک لوکل لیجر میں محفوظ ہو گیا ہے، لیکن سرور سنک میں مسئلہ آیا (${res.backendError})۔`
-        );
-      }
-    } catch (err) {
-      console.error("Failed to add product", err);
-      setError("❌ آئٹم سیو کرنے میں خرابی ہوئی۔");
-    } finally {
-      setSavingStock(false);
-    }
-  }
-
-  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const text = e.target?.result;
-      if (typeof text !== "string") return;
-
-      const lines = text.split("\n");
-      let importedCount = 0;
-
-      for (let i = 1; i < lines.length; i++) {
-        const rawLine = lines[i];
-        if (rawLine === undefined) continue;
-
-        const line = rawLine.trim();
-        if (!line) continue;
-
-        const cols = line.split(",");
-        const [
-          rawSku = "",
-          rawName = "",
-          rawPrice = "100",
-          rawStock = "50",
-          rawCost = "",
-        ] = cols.map((c) => c.replace(/["']/g, "").trim());
-
-        if (!rawName) continue;
-
-        const pSku =
-          rawSku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
-        const parsedSale = Number(rawPrice);
-        const pSale =
-          !Number.isNaN(parsedSale) && parsedSale >= 0
-            ? String(parsedSale)
-            : "100";
-        const parsedCost = rawCost ? Number(rawCost) : parsedSale;
-        const pCost =
-          !Number.isNaN(parsedCost) && parsedCost >= 0
-            ? String(parsedCost)
-            : pSale;
-        const parsedStock = parseInt(rawStock, 10);
-        const pStock =
-          !Number.isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 50;
-
-        try {
-          const saved = await saveWholesalePurchaseItem({
-            itemName: rawName,
-            itemSku: pSku,
-            itemCostPrice: pCost,
-            itemSalePrice: pSale,
-            itemQty: pStock,
-            itemAmount: Math.round(Number(pCost) * pStock * 100) / 100,
-            billLabel: "CSV Import",
-          });
-          if (saved.saved) {
+}
