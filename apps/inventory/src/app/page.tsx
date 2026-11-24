@@ -2684,3 +2684,761 @@ export default function InventoryPage() {
     </AppShell>
   );
 }
+setScannedBillTotal(
+                parsedBillTotal && parsedBillTotal > 0
+                  ? parsedBillTotal
+                  : computedSum
+              );
+
+              const first = parsed[0];
+              if (first) {
+                setName(first.name);
+                setSku(first.sku);
+                setCostPrice(first.costPrice);
+                setSalePrice(first.salePrice);
+                setStockQty(String(first.qty));
+                collectBarcodeEntry(first.sku, "Barcode");
+              }
+              stopCamera();
+              setError(
+                `✔ نیا اسٹاک اسکین مکمل: ${
+                  traderName ? `بل/ٹریڈر: ${traderName} | ` : ""
+                }${parsed.length} آئٹمز ریٹ اور رقم کے ساتھ آ گئی ہیں۔`
+              );
+              return;
+            }
+          }
+
+          const extractedName = String(
+            dataObj?.product_name ?? dataObj?.item_name ?? dataObj?.name ?? ""
+          ).trim();
+          const extractedSku = String(
+            dataObj?.barcode ?? dataObj?.sku ?? dataObj?.code ?? ""
+          ).trim();
+          const singleQty = Math.max(
+            1,
+            parseInt(
+              String(
+                dataObj?.qty ??
+                  payload?.qty ??
+                  dataObj?.quantity ??
+                  dataObj?.stockQty ??
+                  "1"
+              ),
+              10
+            ) || 1
+          );
+          const rawSingleCost =
+            dataObj?.cost_price ??
+            payload?.cost_price ??
+            dataObj?.purchase_price ??
+            dataObj?.rate ??
+            dataObj?.price;
+          const rawSingleAmount =
+            dataObj?.amount ?? payload?.amount ?? parsedBillTotal;
+
+          let singleCost = parseNumericValue(rawSingleCost, 0);
+          let singleAmount = parseNumericValue(rawSingleAmount, 0);
+          if (singleCost <= 0 && singleAmount > 0 && singleQty > 0) {
+            singleCost = Math.round((singleAmount / singleQty) * 100) / 100;
+          }
+          if (singleAmount <= 0 && singleCost > 0) {
+            singleAmount = Math.round(singleCost * singleQty * 100) / 100;
+          }
+
+          const extractedSale =
+            dataObj?.sale_price ?? payload?.sale_price ?? singleCost;
+
+          if (extractedName) setName(extractedName);
+          if (extractedSku) {
+            setSku(extractedSku);
+            collectBarcodeEntry(extractedSku, "Barcode");
+          } else if (extractedName && !sku.trim()) {
+            const genSku = `POS-${Math.floor(100000 + Math.random() * 900000)}`;
+            setSku(genSku);
+            collectBarcodeEntry(genSku, "Barcode");
+          }
+          if (singleCost > 0) setCostPrice(String(singleCost));
+          setSalePrice(String(parseNumericValue(extractedSale, singleCost)));
+          setStockQty(String(singleQty));
+          if (singleAmount > 0) {
+            setScannedBillTotal(singleAmount);
+          }
+
+          stopCamera();
+          if (extractedName || extractedSku) {
+            setError(
+              `✔ اسکین مکمل: ${
+                traderName ? `${traderName} — ` : ""
+              }${extractedName || "آئٹم"} | کوڈ: ${extractedSku || "-"}`
+            );
+          } else {
+            setError(
+              "تصویر ویب ہک تک پہنچ گئی، لیکن نام واضح نہیں پڑھا جا سکا — آپ نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
+            );
+          }
+        } catch (err) {
+          console.error("Wholesale scan error:", err);
+          setError(
+            `❌ اسکین رسپانس میں خرابی (${
+              err instanceof Error ? err.message : "نامعلوم"
+            }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
+          );
+        } finally {
+          setScanningPhoto(false);
+        }
+      },
+      "image/jpeg",
+      0.85
+    );
+  }
+
+  async function saveWholesalePurchaseItem(params: {
+    itemName: string;
+    itemSku: string;
+    itemCostPrice: string;
+    itemSalePrice: string;
+    itemQty: number;
+    itemAmount?: number;
+    billLabel?: string;
+  }): Promise<{ saved: boolean; backendError?: string }> {
+    const cleanName = params.itemName.trim();
+    const cleanSku =
+      params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+    const parsedCost = parseNumericValue(params.itemCostPrice.trim(), 0);
+    const parsedSale =
+      params.itemSalePrice.trim() !== ""
+        ? parseNumericValue(params.itemSalePrice.trim(), parsedCost)
+        : parsedCost;
+    const cleanQty = params.itemQty > 0 ? params.itemQty : 1;
+
+    const lineTotal =
+      params.itemAmount !== undefined && params.itemAmount > 0
+        ? Math.round(params.itemAmount * 100) / 100
+        : Math.round(parsedCost * cleanQty * 100) / 100;
+
+    const effectiveUnitCost =
+      parsedCost > 0
+        ? parsedCost
+        : lineTotal > 0 && cleanQty > 0
+        ? Math.round((lineTotal / cleanQty) * 100) / 100
+        : 0;
+
+    const existingProduct = products.find(
+      (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
+    );
+    const nextStockQty =
+      (existingProduct ? Number(existingProduct.stockQty || 0) : 0) + cleanQty;
+
+    const now = new Date();
+    const activeDate = getTodayDateStr(now);
+
+    saveCostMapping(existingProduct?.id, cleanSku, effectiveUnitCost);
+    appendPurchaseRecord({
+      date: activeDate,
+      time: formatTimeStr(now),
+      supplierOrBill:
+        (params.billLabel || supplierOrBill).trim() || "New Stock / Wholesale",
+      sku: cleanSku,
+      itemName: cleanName,
+      qty: cleanQty,
+      costPrice: effectiveUnitCost,
+      salePrice: parsedSale,
+      totalPurchase: lineTotal,
+    });
+
+    setProducts((prev) => {
+      const idx = prev.findIndex(
+        (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
+      );
+      let nextList: Product[];
+      if (idx >= 0 && prev[idx]) {
+        const current = prev[idx];
+        const updated: Product = {
+          ...current,
+          name: cleanName || current.name,
+          price: String(parsedSale),
+          stockQty: nextStockQty,
+        };
+        nextList = prev.map((item, i) => (i === idx ? updated : item));
+      } else {
+        const optimisticItem = {
+          id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+          name: cleanName,
+          sku: cleanSku,
+          price: String(parsedSale),
+          stockQty: nextStockQty,
+        } as unknown as Product;
+        nextList = [optimisticItem, ...prev];
+      }
+      return nextList;
+    });
+
+    setTodayDate(activeDate);
+
+    try {
+      const response = await apiFetch<Product | { data: Product }>("/products", {
+        method: "POST",
+        body: JSON.stringify({
+          name: cleanName,
+          sku: cleanSku,
+          price: String(parsedSale),
+          stockQty: nextStockQty,
+        }),
+      });
+
+      const createdProduct =
+        response && typeof response === "object" && "data" in response
+          ? (response as { data: Product }).data
+          : (response as Product);
+
+      if (createdProduct && createdProduct.id) {
+        saveCostMapping(createdProduct.id, createdProduct.sku, effectiveUnitCost);
+        setProducts((prev) => {
+          const withoutLocal = prev.filter(
+            (p) =>
+              !String(p.id).startsWith("LOCAL-") ||
+              (p.sku || "").toLowerCase() !== cleanSku.toLowerCase()
+          );
+          const exists = withoutLocal.findIndex(
+            (p) => p.id === createdProduct.id
+          );
+          if (exists >= 0) {
+            return withoutLocal.map((p) =>
+              p.id === createdProduct.id ? createdProduct : p
+            );
+          }
+          return [createdProduct, ...withoutLocal];
+        });
+      }
+
+      return { saved: true };
+    } catch (err) {
+      return {
+        saved: true,
+        backendError:
+          err instanceof Error ? err.message : "Server sync failed",
+      };
+    }
+  }
+
+  async function handleAddAllScannedBillItems() {
+    if (scannedBillItems.length === 0 || savingStock) return;
+    setSavingStock(true);
+    setError("⏳ بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ کی جا رہی ہیں...");
+    try {
+      const activeBillLabel = supplierOrBill.trim() || "Scanned Stock Bill";
+      let failCount = 0;
+      let lastBackendErr = "";
+
+      for (const row of scannedBillItems) {
+        const res = await saveWholesalePurchaseItem({
+          itemName: row.name,
+          itemSku: row.sku,
+          itemCostPrice: row.costPrice,
+          itemSalePrice: row.salePrice,
+          itemQty: row.qty,
+          itemAmount: row.amount,
+          billLabel: activeBillLabel,
+        });
+        if (res.backendError) {
+          failCount++;
+          lastBackendErr = res.backendError;
+        }
+      }
+
+      setScannedBillItems([]);
+      setScannedBillTotal(null);
+      setEditingIndex(null);
+      setActiveLedgerTab("purchase");
+
+      if (failCount === 0) {
+        setError(
+          `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ ہو گئیں!`
+        );
+      } else {
+        setError(
+          `✔ آئٹمز لوکل STOCK / Purchase Ledger میں محفوظ ہو گئیں، تاہم سرور پر ${failCount} آئٹمز سنک نہیں ہو سکیں (${lastBackendErr})۔`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to save scanned bill items", err);
+      setError("❌ بل کی آئٹمز سیو کرنے میں خرابی ہوئی۔");
+    } finally {
+      setSavingStock(false);
+    }
+  }
+
+  async function handleAddProduct(e: FormEvent) {
+    e.preventDefault();
+    if (savingStock) return;
+    if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
+      alert("براہ کرم پروڈکٹ کا نام اور قیمت درج کریں!");
+      return;
+    }
+
+    setSavingStock(true);
+    setError("⏳ نیا اسٹاک محفوظ کیا جا رہا ہے...");
+    try {
+      const cleanCode =
+        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+      const qtyNum = parseInt(stockQty, 10) || 1;
+      const costNum = parseNumericValue(
+        costPrice.trim() || salePrice.trim(),
+        0
+      );
+      const saleNum = parseNumericValue(
+        salePrice.trim() || costPrice.trim(),
+        costNum
+      );
+      const computedLineAmount = Math.round(costNum * qtyNum * 100) / 100;
+
+      const res = await saveWholesalePurchaseItem({
+        itemName: name.trim(),
+        itemSku: cleanCode,
+        itemCostPrice: String(costNum),
+        itemSalePrice: String(saleNum),
+        itemQty: qtyNum,
+        itemAmount: computedLineAmount,
+        billLabel: supplierOrBill.trim() || "New Stock Entry",
+      });
+
+      collectBarcodeEntry(cleanCode, selectedChannel);
+
+      setName("");
+      setSku("");
+      setCostPrice("");
+      setSalePrice("");
+      setStockQty("100");
+      setActiveLedgerTab("purchase");
+
+      if (!res.backendError) {
+        setError(
+          "✔ نیا اسٹاک انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گیا ہے!"
+        );
+      } else {
+        setError(
+          `✔ اسٹاک لوکل لیجر میں محفوظ ہو گیا ہے، لیکن سرور سنک میں مسئلہ آیا (${res.backendError})۔`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to add product", err);
+      setError("❌ پروڈکٹ سیو کرنے میں خرابی ہوئی۔");
+    } finally {
+      setSavingStock(false);
+    }
+  }
+
+  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target?.result;
+      if (typeof text !== "string") return;
+
+      const lines = text.split("\n");
+      let importedCount = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const rawLine = lines[i];
+        if (rawLine === undefined) continue;
+
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        const cols = line.split(",");
+        const [
+          rawSku = "",
+          rawName = "",
+          rawPrice = "100",
+          rawStock = "50",
+          rawCost = "",
+        ] = cols.map((c) => c.replace(/["']/g, "").trim());
+
+        if (!rawName) continue;
+
+        const pSku =
+          rawSku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+        const parsedSale = Number(rawPrice);
+        const pSale =
+          !Number.isNaN(parsedSale) && parsedSale >= 0
+            ? String(parsedSale)
+            : "100";
+        const parsedCost = rawCost ? Number(rawCost) : parsedSale;
+        const pCost =
+          !Number.isNaN(parsedCost) && parsedCost >= 0
+            ? String(parsedCost)
+            : pSale;
+        const parsedStock = parseInt(rawStock, 10);
+        const pStock =
+          !Number.isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 50;
+
+        try {
+          const saved = await saveWholesalePurchaseItem({
+            itemName: rawName,
+            itemSku: pSku,
+            itemCostPrice: pCost,
+            itemSalePrice: pSale,
+            itemQty: pStock,
+            itemAmount: Math.round(Number(pCost) * pStock * 100) / 100,
+            billLabel: "CSV Import",
+          });
+          if (saved.saved) {
+            importedCount++;
+          }
+        } catch {}
+      }
+
+      alert(`کامیابی کے ساتھ ${importedCount} پروڈکٹس امپورٹ ہو گئی ہیں!`);
+      loadProducts();
+    };
+    reader.readAsText(file);
+  };
+
+  function exportToCSV() {
+    if (products.length === 0) {
+      alert("No products available to export.");
+      return;
+    }
+    const headers = [
+      "Barcode / SKU",
+      "Item Name",
+      "Cost Price (Rs)",
+      "Sale Price (Rs)",
+      "Stock Qty",
+      "Status",
+    ];
+    const rows = products.map((p) => {
+      const uCost = lookupUnitCost(
+        p.id,
+        p.sku,
+        parseFloat(p.price || "0") || 0
+      );
+      return [
+        `"${p.sku || ""}"`,
+        `"${p.name.replace(/"/g, '""')}"`,
+        uCost,
+        p.price,
+        p.stockQty,
+        p.stockQty > 5
+          ? "In Stock"
+          : p.stockQty > 0
+          ? "Low Stock"
+          : "Out of Stock",
+      ];
+    });
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    const safeStoreName = storeInfo.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "_");
+    link.setAttribute(
+      "download",
+      `${safeStoreName}_inventory_${new Date().toISOString().slice(0, 10)}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+    return matchesSearch;
+  });
+
+  const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
+  const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
+
+  const todaySales = salesEntries.filter((e) => e.date === todayDate);
+  const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
+  const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
+  const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
+  const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
+
+  const todayKhata = khataEntries.filter((e) => e.date === todayDate);
+  const todayCashIn = todayKhata
+    .filter((k) => k.entryType === "cash_in")
+    .reduce((s, k) => s + k.amount, 0);
+  const todayKhataOut = todayKhata
+    .filter((k) => k.entryType === "khata" || k.entryType === "expense")
+    .reduce((s, k) => s + k.amount, 0);
+  const khataHisabBalance = todaySalesTotal + todayCashIn - todayKhataOut;
+
+  const allDates = Array.from(
+    new Set([
+      ...purchaseEntries.map((p) => p.date),
+      ...salesEntries.map((s) => s.date),
+      ...khataEntries.map((k) => k.date),
+      todayDate,
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+
+  const dateClosingSummary = allDates.map((d) => {
+    const pRows = purchaseEntries.filter((p) => p.date === d);
+    const sRows = salesEntries.filter((s) => s.date === d);
+    const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
+    const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
+    const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
+    const sQty = sRows.reduce((acc, r) => acc + r.qty, 0);
+    const profitTotal = sRows.reduce((acc, r) => acc + r.profit, 0);
+    const isClosed = d < todayDate;
+
+    return {
+      date: d,
+      pQty,
+      pTotal,
+      sQty,
+      sTotal,
+      profitTotal,
+      isClosed,
+    };
+  });
+
+  const scannedItemsSum = scannedBillItems.reduce(
+    (sum, item) => sum + item.amount,
+    0
+  );
+  const displayScannedTotal =
+    scannedBillTotal !== null && scannedBillTotal > 0
+      ? scannedBillTotal
+      : scannedItemsSum;
+
+  return (
+    <AppShell
+      title="Inventory"
+      nav={
+        <nav className="flex gap-4 text-sm">
+          <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
+            Dashboard
+          </a>
+          <a href="/inventory" className="font-medium text-slate-900">
+            Inventory
+          </a>
+          <a href="/checkout" className="text-slate-600 hover:text-slate-900">
+            Checkout
+          </a>
+        </nav>
+      }
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
+          <p className="text-sm font-medium text-slate-600">
+            {storeInfo.details}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          {storeInfo.phone && (
+            <span className="rounded bg-slate-100 px-3 py-1 font-medium text-slate-700">
+              📞 {storeInfo.phone}
+            </span>
+          )}
+          <span className="rounded bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+            Active Date: {todayDate}
+          </span>
+        </div>
+      </div>
+
+      <PageHeader
+        title="STOCK — Inventory & Wholesale Purchase"
+        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور سیل / کھاتہ کے الگ خانے۔"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/checkout")}
+            >
+              Checkout Counter
+            </Button>
+            <Button type="button" variant="outline" onClick={exportToCSV}>
+              Export CSV
+            </Button>
+            <label className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+              Import CSV
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleCSVImport}
+                className="hidden"
+              />
+            </label>
+          </div>
+        }
+      />
+
+      {error && (
+        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+          {error}
+        </div>
+      )}
+
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              STOCK — Today Purchase Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">
+              {todayPurchaseQty}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              SALE — Today Sold Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">{todaySoldQty}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              SALE — Today Sales Total
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-emerald-700">
+              {formatMoney(todaySalesTotal)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Cost: {formatMoney(todayCostOfSold)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Net Profit / Hisab
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-blue-700">
+              {formatMoney(todayNetProfit)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Khata Balance: {formatMoney(khataHisabBalance)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>STOCK — Add / Restock Product</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleAddProduct} className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Supplier / Bill Name
+                  </label>
+                  <Input
+                    value={supplierOrBill}
+                    onChange={(e) => setSupplierOrBill(e.target.value)}
+                    placeholder="Bill supplier / customer name"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Barcode / SKU
+                  </label>
+                  <Input
+                    value={sku}
+                    onChange={(e) => handleBarcodeLookup(e.target.value)}
+                    placeholder="Scan or enter SKU"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-700">
+                  Product Name
+                </label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Enter product name"
+                  required
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Rate / Cost Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={costPrice}
+                    onChange={(e) => setCostPrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Sale Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={salePrice}
+                    onChange={(e) => setSalePrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Qty / Stock
+                  </label>
+                  <Input
+                    type="number"
+                    value={stockQty}
+                    onChange={(e) => setStockQty(e.target.value)}
+                    placeholder="100"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button type="submit" disabled={savingStock}>
+                  {savingStock ? "Saving..." : "Save to STOCK"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={cameraOpen ? stopCamera : startCameraScanner}
+                >
+                  {cameraOpen ? "Stop Camera" : "Scan Bill / Product"}
+                </Button>
+              </div>
+            </form>
+
+            {cameraOpen && (
+              <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-950 p-3">
+                <video
+                  ref={videoRef}
+                  className="max-h-64 w-full rounded bg-black object-contain"
+                  playsInline
+                  muted
+                />
