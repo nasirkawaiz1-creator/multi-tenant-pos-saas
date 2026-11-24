@@ -522,16 +522,18 @@ export default function InventoryPage() {
     const qNum = Math.max(1, parseInt(editDraft.qty, 10) || 1);
     const rateNum = parseNumericValue(editDraft.costPrice, 0);
     const rawAmtNum = parseNumericValue(editDraft.amount, 0);
-    const finalAmt =
-      rawAmtNum > 0
-        ? Math.round(rawAmtNum * 100) / 100
-        : Math.round(rateNum * qNum * 100) / 100;
+
     const finalRate =
       rateNum > 0
         ? rateNum
-        : finalAmt > 0 && qNum > 0
-        ? Math.round((finalAmt / qNum) * 100) / 100
+        : rawAmtNum > 0 && qNum > 0
+        ? Math.round((rawAmtNum / qNum) * 100) / 100
         : 0;
+    const finalAmt =
+      finalRate > 0
+        ? Math.round(finalRate * qNum * 100) / 100
+        : Math.round(rawAmtNum * 100) / 100;
+
     const saleNum =
       editDraft.salePrice.trim() !== ""
         ? parseNumericValue(editDraft.salePrice, finalRate)
@@ -1007,14 +1009,16 @@ export default function InventoryPage() {
                 const rawAmount = it?.amount ?? it?.line_total ?? it?.total;
 
                 let costNum = parseNumericValue(rawCost, 0);
-                let lineAmountNum = parseNumericValue(rawAmount, 0);
+                const rawAmountNum = parseNumericValue(rawAmount, 0);
 
-                if (costNum <= 0 && lineAmountNum > 0 && qtyNum > 0) {
-                  costNum = Math.round((lineAmountNum / qtyNum) * 100) / 100;
+                if (costNum <= 0 && rawAmountNum > 0 && qtyNum > 0) {
+                  costNum = Math.round((rawAmountNum / qtyNum) * 100) / 100;
                 }
-                if (lineAmountNum <= 0 && costNum > 0) {
-                  lineAmountNum = Math.round(costNum * qtyNum * 100) / 100;
-                }
+
+                const lineAmountNum =
+                  costNum > 0
+                    ? Math.round(costNum * qtyNum * 100) / 100
+                    : Math.round(rawAmountNum * 100) / 100;
 
                 const rawSale = it?.sale_price ?? it?.retail_price;
                 const saleNum =
@@ -1024,7 +1028,11 @@ export default function InventoryPage() {
 
                 return {
                   name: String(
-                    it?.product_name ?? it?.item_name ?? it?.name ?? ""
+                    it?.item ??
+                      it?.item_name ??
+                      it?.product_name ??
+                      it?.name ??
+                      ""
                   ).trim(),
                   sku: String(
                     it?.barcode ??
@@ -1044,9 +1052,11 @@ export default function InventoryPage() {
               setScannedBillItems(parsed);
               const computedSum = parsed.reduce((acc, r) => acc + r.amount, 0);
               setScannedBillTotal(
-                parsedBillTotal && parsedBillTotal > 0
+                computedSum > 0
+                  ? computedSum
+                  : parsedBillTotal && parsedBillTotal > 0
                   ? parsedBillTotal
-                  : computedSum
+                  : 0
               );
 
               const first = parsed[0];
@@ -1069,7 +1079,11 @@ export default function InventoryPage() {
           }
 
           const extractedName = String(
-            dataObj?.product_name ?? dataObj?.item_name ?? dataObj?.name ?? ""
+            dataObj?.item ??
+              dataObj?.item_name ??
+              dataObj?.product_name ??
+              dataObj?.name ??
+              ""
           ).trim();
           const extractedSku = String(
             dataObj?.barcode ?? dataObj?.sku ?? dataObj?.code ?? ""
@@ -1097,13 +1111,14 @@ export default function InventoryPage() {
             dataObj?.amount ?? payload?.amount ?? parsedBillTotal;
 
           let singleCost = parseNumericValue(rawSingleCost, 0);
-          let singleAmount = parseNumericValue(rawSingleAmount, 0);
-          if (singleCost <= 0 && singleAmount > 0 && singleQty > 0) {
-            singleCost = Math.round((singleAmount / singleQty) * 100) / 100;
+          const rawSingleAmtNum = parseNumericValue(rawSingleAmount, 0);
+          if (singleCost <= 0 && rawSingleAmtNum > 0 && singleQty > 0) {
+            singleCost = Math.round((rawSingleAmtNum / singleQty) * 100) / 100;
           }
-          if (singleAmount <= 0 && singleCost > 0) {
-            singleAmount = Math.round(singleCost * singleQty * 100) / 100;
-          }
+          const singleAmount =
+            singleCost > 0
+              ? Math.round(singleCost * singleQty * 100) / 100
+              : Math.round(rawSingleAmtNum * 100) / 100;
 
           const extractedSale =
             dataObj?.sale_price ?? payload?.sale_price ?? singleCost;
@@ -1133,7 +1148,7 @@ export default function InventoryPage() {
             );
           } else {
             setError(
-              "تصویر ویب ہک تک پہنچ گئی، لیکن نام واضح نہیں پڑھا جا سکا — آپ نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
+              "تصویر ویب ہک تک پہنچ گئی، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
             );
           }
         } catch (err) {
@@ -1171,16 +1186,18 @@ export default function InventoryPage() {
         : parsedCost;
     const cleanQty = params.itemQty > 0 ? params.itemQty : 1;
 
-    const lineTotal =
-      params.itemAmount !== undefined && params.itemAmount > 0
-        ? Math.round(params.itemAmount * 100) / 100
-        : Math.round(parsedCost * cleanQty * 100) / 100;
-
     const effectiveUnitCost =
       parsedCost > 0
         ? parsedCost
-        : lineTotal > 0 && cleanQty > 0
-        ? Math.round((lineTotal / cleanQty) * 100) / 100
+        : params.itemAmount !== undefined && params.itemAmount > 0 && cleanQty > 0
+        ? Math.round((params.itemAmount / cleanQty) * 100) / 100
+        : 0;
+
+    const lineTotal =
+      effectiveUnitCost > 0
+        ? Math.round(effectiveUnitCost * cleanQty * 100) / 100
+        : params.itemAmount !== undefined && params.itemAmount > 0
+        ? Math.round(params.itemAmount * 100) / 100
         : 0;
 
     const existingProduct = products.find(
@@ -1338,7 +1355,7 @@ export default function InventoryPage() {
     e.preventDefault();
     if (savingStock) return;
     if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
-      alert("براہ کرم پروڈکٹ کا نام اور قیمت درج کریں!");
+      alert("براہ کرم آئٹم اور قیمت درج کریں!");
       return;
     }
 
@@ -1388,7 +1405,7 @@ export default function InventoryPage() {
       }
     } catch (err) {
       console.error("Failed to add product", err);
-      setError("❌ پروڈکٹ سیو کرنے میں خرابی ہوئی۔");
+      setError("❌ آئٹم سیو کرنے میں خرابی ہوئی۔");
     } finally {
       setSavingStock(false);
     }
@@ -1456,7 +1473,7 @@ export default function InventoryPage() {
         } catch {}
       }
 
-      alert(`کامیابی کے ساتھ ${importedCount} پروڈکٹس امپورٹ ہو گئی ہیں!`);
+      alert(`کامیابی کے ساتھ ${importedCount} آئٹمز امپورٹ ہو گئی ہیں!`);
       void loadProducts();
     };
     reader.readAsText(file);
@@ -1464,15 +1481,16 @@ export default function InventoryPage() {
 
   function exportToCSV() {
     if (products.length === 0) {
-      alert("No products available to export.");
+      alert("No items available to export.");
       return;
     }
     const headers = [
       "Barcode / SKU",
-      "Item Name",
+      "Item",
       "Cost Price (Rs)",
       "Sale Price (Rs)",
       "Stock Qty",
+      "Total Cost (Rs)",
       "Status",
     ];
     const rows = products.map((p) => {
@@ -1481,12 +1499,14 @@ export default function InventoryPage() {
         p.sku,
         parseFloat(p.price || "0") || 0
       );
+      const lineTotal = Math.round(uCost * Number(p.stockQty || 0) * 100) / 100;
       return [
         `"${p.sku || ""}"`,
         `"${p.name.replace(/"/g, '""')}"`,
         uCost,
         p.price,
         p.stockQty,
+        lineTotal,
         p.stockQty > 5
           ? "In Stock"
           : p.stockQty > 0
@@ -1518,6 +1538,11 @@ export default function InventoryPage() {
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
     return matchesSearch;
   });
+
+  const totalStockValue = filteredProducts.reduce((sum, p) => {
+    const uCost = lookupUnitCost(p.id, p.sku, parseFloat(p.price || "0") || 0);
+    return sum + uCost * Number(p.stockQty || 0);
+  }, 0);
 
   const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
   const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
@@ -1572,9 +1597,11 @@ export default function InventoryPage() {
     0
   );
   const displayScannedTotal =
-    scannedBillTotal !== null && scannedBillTotal > 0
+    scannedItemsSum > 0
+      ? scannedItemsSum
+      : scannedBillTotal !== null && scannedBillTotal > 0
       ? scannedBillTotal
-      : scannedItemsSum;
+      : 0;
 
   return (
     <AppShell
@@ -1716,7 +1743,7 @@ export default function InventoryPage() {
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>STOCK — Add / Restock Product</CardTitle>
+            <CardTitle>STOCK — Add / Restock Item</CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleAddProduct} className="space-y-3">
@@ -1745,12 +1772,12 @@ export default function InventoryPage() {
 
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-700">
-                  Product Name
+                  Item
                 </label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter product name"
+                  placeholder="Enter item"
                   required
                 />
               </div>
@@ -1803,7 +1830,7 @@ export default function InventoryPage() {
                   variant="outline"
                   onClick={cameraOpen ? stopCamera : startCameraScanner}
                 >
-                  {cameraOpen ? "Stop Camera" : "Scan Bill / Product"}
+                  {cameraOpen ? "Stop Camera" : "Scan Bill / Item"}
                 </Button>
               </div>
             </form>
@@ -1872,7 +1899,7 @@ export default function InventoryPage() {
                                   name: e.target.value,
                                 }))
                               }
-                              placeholder="Item Name"
+                              placeholder="Item"
                             />
                             <Input
                               value={editDraft.sku}
@@ -2100,30 +2127,36 @@ export default function InventoryPage() {
       <Card className="mb-6">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle>STOCK — Products ({filteredProducts.length})</CardTitle>
+            <div>
+              <CardTitle>STOCK — Items ({filteredProducts.length})</CardTitle>
+              <p className="mt-1 text-xs font-medium text-slate-600">
+                Total Stock Value: <strong>{formatMoney(totalStockValue)}</strong>
+              </p>
+            </div>
             <Input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by name or SKU..."
+              placeholder="Search by item or SKU..."
               className="max-w-xs"
             />
           </div>
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="text-sm text-slate-500">Loading products...</p>
+            <p className="text-sm text-slate-500">Loading items...</p>
           ) : filteredProducts.length === 0 ? (
-            <p className="text-sm text-slate-500">No products found.</p>
+            <p className="text-sm text-slate-500">No items found.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
                     <th className="py-2 pr-4">SKU</th>
-                    <th className="py-2 pr-4">Name</th>
+                    <th className="py-2 pr-4">Item</th>
                     <th className="py-2 pr-4">Cost</th>
                     <th className="py-2 pr-4">Sale Price</th>
                     <th className="py-2 pr-4">Stock</th>
+                    <th className="py-2 pr-4">Total</th>
                     <th className="py-2">Status</th>
                   </tr>
                 </thead>
@@ -2134,6 +2167,8 @@ export default function InventoryPage() {
                       p.sku,
                       parseFloat(p.price || "0") || 0
                     );
+                    const rowTotal =
+                      Math.round(uCost * Number(p.stockQty || 0) * 100) / 100;
                     return (
                       <tr key={p.id} className="border-b border-slate-100">
                         <td className="py-2 pr-4 font-mono text-xs">
@@ -2145,6 +2180,9 @@ export default function InventoryPage() {
                           {formatMoney(parseFloat(p.price || "0") || 0)}
                         </td>
                         <td className="py-2 pr-4">{p.stockQty}</td>
+                        <td className="py-2 pr-4 font-semibold">
+                          {formatMoney(rowTotal)}
+                        </td>
                         <td className="py-2">
                           <Badge
                             variant={
