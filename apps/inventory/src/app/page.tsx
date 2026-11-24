@@ -26,6 +26,7 @@ const KHATA_LEDGER_BASE_KEY = "pos:dailyKhataLedger:v1";
 const CUSTOMER_KHATA_BOOK_BASE_KEY = "pos:customerKhataBook:v1";
 const LAST_BILL_IMAGE_BASE_KEY = "pos:lastScannedBillImage:v1";
 const MIDNIGHT_ROLLOVER_INTERVAL_MS = 15000;
+const SALES_SYNC_POLL_MS = 4000;
 
 type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
 type KhataEntryType = "expense" | "khata" | "cash_in";
@@ -62,6 +63,30 @@ interface SaleEntry {
   totalSale: number;
   totalCost: number;
   profit: number;
+}
+
+interface BackendOrderItem {
+  id?: string | number;
+  productId?: string;
+  sku?: string;
+  productName?: string;
+  name?: string;
+  quantity?: number;
+  qty?: number;
+  unitPrice?: number | string;
+  price?: number | string;
+}
+
+interface BackendOrder {
+  id?: string | number;
+  orderNumber?: string | number;
+  billNo?: string | number;
+  createdAt?: string;
+  created_at?: string;
+  date?: string;
+  total?: number | string;
+  subtotal?: number | string;
+  items?: BackendOrderItem[];
 }
 
 interface KhataEntry {
@@ -197,6 +222,7 @@ function parseNumericValue(raw: unknown, fallback: number = 0): number {
 export default function InventoryPage() {
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
+  const productsRef = useRef<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [scanDiagnostic, setScanDiagnostic] = useState("");
@@ -240,13 +266,6 @@ export default function InventoryPage() {
   const [salesEntries, setSalesEntries] = useState<SaleEntry[]>([]);
   const [dailySaleEntries, setDailySaleEntries] = useState<SaleEntry[]>([]);
   const [saleFilterDate, setSaleFilterDate] = useState<string>(() =>
-    getTodayDateStr()
-  );
-  const [quickSaleItemName, setQuickSaleItemName] = useState("");
-  const [quickSaleQty, setQuickSaleQty] = useState("1");
-  const [quickSalePrice, setQuickSalePrice] = useState("");
-  const [quickSaleBillRef, setQuickSaleBillRef] = useState("");
-  const [quickSaleDate, setQuickSaleDate] = useState<string>(() =>
     getTodayDateStr()
   );
 
@@ -310,6 +329,291 @@ export default function InventoryPage() {
     } catch {}
   }
 
+  function mergeAndSaveSalesList(
+    tenantKey: string,
+    incomingRows: SaleEntry[],
+    existingRows: SaleEntry[]
+  ): SaleEntry[] {
+    const map = new Map<string, SaleEntry>();
+    for (const r of [...incomingRows, ...existingRows]) {
+      const key =
+        r.id ||
+        `${r.date}|${r.time}|${r.billRef}|${r.itemName}|${r.qty}|${r.totalSale}`;
+      if (!map.has(key)) {
+        map.set(key, r);
+      }
+    }
+    const merged = Array.from(map.values()).sort((a, b) => {
+      if (a.date !== b.date) return b.date.localeCompare(a.date);
+      return b.time.localeCompare(a.time);
+    });
+    safeJsonWrite(buildTenantStorageKey(SALES_LEDGER_BASE_KEY, tenantKey), merged);
+    return merged;
+  }
+
+  function extractCheckoutSalesFromLocalStorage(
+    tenantKey: string,
+    costMapArg: Record<string, number>,
+    prodList: Product[]
+  ): SaleEntry[] {
+    if (typeof window === "undefined") return [];
+    const foundRows: SaleEntry[] = [];
+    const seenKeys = new Set<string>();
+
+    const pushSaleRow = (row: SaleEntry) => {
+      const dedupe = `${row.date}|${row.billRef}|${row.itemName}|${row.qty}|${row.totalSale}`;
+      if (seenKeys.has(dedupe)) return;
+      seenKeys.add(dedupe);
+      foundRows.push(row);
+    };
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const lower = k.toLowerCase();
+        if (
+          k.startsWith(SALES_LEDGER_BASE_KEY) ||
+          lower.includes("checkout") ||
+          lower.includes("order") ||
+          lower.includes("receipt") ||
+          lower.includes("sale")
+        ) {
+          if (
+            k.startsWith(PURCHASE_LEDGER_BASE_KEY) ||
+            k.startsWith(KHATA_LEDGER_BASE_KEY) ||
+            k.startsWith(CUSTOMER_KHATA_BOOK_BASE_KEY) ||
+            k.startsWith(PRODUCT_COST_MAP_BASE_KEY)
+          ) {
+            continue;
+          }
+          const raw = localStorage.getItem(k);
+          if (!raw) continue;
+          const parsed = JSON.parse(raw) as unknown;
+          const arr = Array.isArray(parsed)
+            ? parsed
+            : parsed &&
+              typeof parsed === "object" &&
+              Array.isArray((parsed as { orders?: unknown[] }).orders)
+            ? (parsed as { orders: unknown[] }).orders
+            : parsed &&
+              typeof parsed === "object" &&
+              Array.isArray((parsed as { items?: unknown[] }).items)
+            ? (parsed as { items: unknown[] }).items
+            : [];
+
+          for (const item of arr) {
+            if (!item || typeof item !== "object") continue;
+            const obj = item as Record<string, unknown>;
+            if (
+              "totalSale" in obj &&
+              ("itemName" in obj || "productName" in obj)
+            ) {
+              const sPrice = parseNumericValue(obj.salePrice ?? obj.unitPrice, 0);
+              const qNum = Math.max(1, parseInt(String(obj.qty ?? obj.quantity ?? "1"), 10) || 1);
+              const tSale = parseNumericValue(obj.totalSale, sPrice * qNum);
+              const uCost = parseNumericValue(
+                obj.costPrice,
+                lookupUnitCost(
+                  String(obj.productId || ""),
+                  String(obj.sku || ""),
+                  sPrice,
+                  costMapArg
+                )
+              );
+              const tCost = parseNumericValue(obj.totalCost, uCost * qNum);
+              const prof = parseNumericValue(obj.profit, tSale - tCost);
+              const dtRaw = String(obj.date || "");
+              const dateVal =
+                /^\d{4}-\d{2}-\d{2}$/.test(dtRaw)
+                  ? dtRaw
+                  : getTodayDateStr(dtRaw ? new Date(dtRaw) : new Date());
+
+              pushSaleRow({
+                id: String(
+                  obj.id ||
+                    `CHK-${dateVal}-${Math.floor(1000 + Math.random() * 9000)}`
+                ),
+                date: dateVal,
+                time: String(obj.time || formatTimeStr(new Date())),
+                billRef: String(obj.billRef || obj.billNo || obj.orderId || "Checkout Scan"),
+                itemName: String(obj.itemName || obj.productName || obj.name || "Sold Item"),
+                qty: qNum,
+                costPrice: uCost,
+                salePrice: sPrice,
+                totalSale: tSale,
+                totalCost: tCost,
+                profit: prof,
+              });
+            } else if (
+              Array.isArray(obj.items) ||
+              "subtotal" in obj ||
+              "total" in obj
+            ) {
+              const ord = obj as BackendOrder;
+              const dtSource =
+                ord.createdAt || ord.created_at || ord.date || new Date().toISOString();
+              const parsedDt = new Date(String(dtSource));
+              const safeDt = Number.isNaN(parsedDt.getTime()) ? new Date() : parsedDt;
+              const ordDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ord.date || ""))
+                ? String(ord.date)
+                : getTodayDateStr(safeDt);
+              const ordTime = formatTimeStr(safeDt);
+              const billRef = String(
+                ord.billNo ?? ord.orderNumber ?? ord.id ?? "Checkout Bill"
+              );
+
+              if (Array.isArray(ord.items) && ord.items.length > 0) {
+                ord.items.forEach((it, idx) => {
+                  const qty = Math.max(1, parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1);
+                  const uPrice = parseNumericValue(it.unitPrice ?? it.price, 0);
+                  const pName = String(it.productName ?? it.name ?? "Scanned Item");
+                  const matchedProd = prodList.find(
+                    (p) =>
+                      p.id === it.productId ||
+                      (it.sku && p.sku && p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
+                      p.name.toLowerCase() === pName.toLowerCase()
+                  );
+                  const uCost = lookupUnitCost(
+                    it.productId || matchedProd?.id,
+                    it.sku || matchedProd?.sku,
+                    uPrice,
+                    costMapArg
+                  );
+                  const lineSale = Math.round(uPrice * qty * 100) / 100;
+                  const lineCost = Math.round(uCost * qty * 100) / 100;
+                  pushSaleRow({
+                    id: String(it.id || `ORD-${billRef}-${ordDate}-${idx}`),
+                    date: ordDate,
+                    time: ordTime,
+                    billRef,
+                    itemName: pName,
+                    qty,
+                    costPrice: uCost,
+                    salePrice: uPrice,
+                    totalSale: lineSale,
+                    totalCost: lineCost,
+                    profit: Math.round((lineSale - lineCost) * 100) / 100,
+                  });
+                });
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+
+    return foundRows;
+  }
+
+  async function syncCheckoutSalesNow(
+    costMapArg: Record<string, number> = productCostMapRef.current,
+    prodList: Product[] = productsRef.current
+  ) {
+    const tenantKey = activeTenantIdRef.current || "default";
+    const localCheckoutRows = extractCheckoutSalesFromLocalStorage(
+      tenantKey,
+      costMapArg,
+      prodList
+    );
+
+    const apiRows: SaleEntry[] = [];
+    for (const endpoint of ["/orders", "/sales", "/checkout/orders"]) {
+      try {
+        const res = await apiFetch<
+          { data?: BackendOrder[] } | BackendOrder[] | Record<string, unknown>
+        >(endpoint);
+        const orderList: BackendOrder[] = Array.isArray(res)
+          ? (res as BackendOrder[])
+          : Array.isArray((res as { data?: unknown[] })?.data)
+          ? ((res as { data: BackendOrder[] }).data)
+          : [];
+
+        for (const ord of orderList) {
+          if (!ord || typeof ord !== "object") continue;
+          const dtSource =
+            ord.createdAt || ord.created_at || ord.date || new Date().toISOString();
+          const parsedDt = new Date(String(dtSource));
+          const safeDt = Number.isNaN(parsedDt.getTime()) ? new Date() : parsedDt;
+          const ordDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ord.date || ""))
+            ? String(ord.date)
+            : getTodayDateStr(safeDt);
+          const ordTime = formatTimeStr(safeDt);
+          const billRef = String(
+            ord.billNo ?? ord.orderNumber ?? ord.id ?? "POS Bill"
+          );
+
+          if (Array.isArray(ord.items) && ord.items.length > 0) {
+            ord.items.forEach((it, idx) => {
+              const qty = Math.max(
+                1,
+                parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1
+              );
+              const uPrice = parseNumericValue(it.unitPrice ?? it.price, 0);
+              const pName = String(it.productName ?? it.name ?? "Sold Item");
+              const matchedProd = prodList.find(
+                (p) =>
+                  p.id === it.productId ||
+                  (it.sku &&
+                    p.sku &&
+                    p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
+                  p.name.toLowerCase() === pName.toLowerCase()
+              );
+              const uCost = lookupUnitCost(
+                it.productId || matchedProd?.id,
+                it.sku || matchedProd?.sku,
+                uPrice,
+                costMapArg
+              );
+              const lineSale = Math.round(uPrice * qty * 100) / 100;
+              const lineCost = Math.round(uCost * qty * 100) / 100;
+              apiRows.push({
+                id: String(it.id || `API-ORD-${billRef}-${ordDate}-${idx}`),
+                date: ordDate,
+                time: ordTime,
+                billRef,
+                itemName: pName,
+                qty,
+                costPrice: uCost,
+                salePrice: uPrice,
+                totalSale: lineSale,
+                totalCost: lineCost,
+                profit: Math.round((lineSale - lineCost) * 100) / 100,
+              });
+            });
+          } else {
+            const totalAmount = parseNumericValue(ord.total ?? ord.subtotal, 0);
+            if (totalAmount > 0) {
+              apiRows.push({
+                id: `API-ORD-${billRef}-${ordDate}`,
+                date: ordDate,
+                time: ordTime,
+                billRef,
+                itemName: `Checkout Bill #${billRef}`,
+                qty: 1,
+                costPrice: totalAmount,
+                salePrice: totalAmount,
+                totalSale: totalAmount,
+                totalCost: totalAmount,
+                profit: 0,
+              });
+            }
+          }
+        }
+        if (orderList.length > 0) break;
+      } catch {}
+    }
+
+    const combinedIncoming = [...apiRows, ...localCheckoutRows];
+    if (combinedIncoming.length === 0) return;
+
+    setDailySaleEntries((prev) => {
+      const merged = mergeAndSaveSalesList(tenantKey, combinedIncoming, prev);
+      setSalesEntries(merged);
+      return merged;
+    });
+  }
+
   function loadTenantLocalData(tenantKey: string): Record<string, number> {
     const cleanKey = sanitizeTenantId(tenantKey) || "default";
     activeTenantIdRef.current = cleanKey;
@@ -346,9 +650,20 @@ export default function InventoryPage() {
       }
     } catch {}
 
+    const extraLocalCheckout = extractCheckoutSalesFromLocalStorage(
+      cleanKey,
+      savedCostMap,
+      productsRef.current
+    );
+    const initialSales = mergeAndSaveSalesList(
+      cleanKey,
+      extraLocalCheckout,
+      savedSales
+    );
+
     setPurchaseEntries(savedPurchases);
-    setSalesEntries(savedSales);
-    setDailySaleEntries(savedSales);
+    setSalesEntries(initialSales);
+    setDailySaleEntries(initialSales);
     setKhataEntries(savedKhata);
     setCustomerAccounts(savedCustomers);
     safeJsonWrite(
@@ -364,6 +679,7 @@ export default function InventoryPage() {
     const tokenTenant = getTenantIdFromToken();
     const initialMap = loadTenantLocalData(tokenTenant);
     void loadProducts(initialMap);
+    void syncCheckoutSalesNow(initialMap, productsRef.current);
 
     const endpoints = ["/auth/me", "/stores/current", "/store/profile"];
     for (const ep of endpoints) {
@@ -428,6 +744,7 @@ export default function InventoryPage() {
         if (resolvedTenant && resolvedTenant !== activeTenantIdRef.current) {
           const switchedMap = loadTenantLocalData(resolvedTenant);
           void loadProducts(switchedMap);
+          void syncCheckoutSalesNow(switchedMap, productsRef.current);
         }
 
         if (resolvedName || resolvedDetails || resolvedPhone || resolvedTenant) {
@@ -462,13 +779,28 @@ export default function InventoryPage() {
       setTodayDate((prev) => {
         if (prev !== nextToday) {
           setSaleFilterDate(nextToday);
-          setQuickSaleDate(nextToday);
         }
         return nextToday;
       });
     };
     const timer = window.setInterval(syncDateRollover, MIDNIGHT_ROLLOVER_INTERVAL_MS);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const pollSales = () => {
+      void syncCheckoutSalesNow(productCostMapRef.current, productsRef.current);
+    };
+    const timer = window.setInterval(pollSales, SALES_SYNC_POLL_MS);
+    const onFocus = () => pollSales();
+    const onStorage = () => pollSales();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -480,6 +812,10 @@ export default function InventoryPage() {
   useEffect(() => {
     productCostMapRef.current = productCostMap;
   }, [productCostMap]);
+
+  useEffect(() => {
+    productsRef.current = products;
+  }, [products]);
 
   useEffect(() => {
     todayDateRef.current = todayDate;
@@ -495,9 +831,11 @@ export default function InventoryPage() {
         ? res.data
         : [];
       setProducts(list);
+      productsRef.current = list;
       if (costMapArg && Object.keys(costMapArg).length > 0) {
         setProductCostMap(costMapArg);
       }
+      void syncCheckoutSalesNow(costMapArg, list);
     } catch (err) {
       console.error("Load products error:", err);
     } finally {
@@ -631,7 +969,7 @@ export default function InventoryPage() {
     productId: string | undefined,
     productSku: string | undefined,
     fallbackSalePrice: number,
-    costMapArg: Record<string, number> = productCostMap
+    costMapArg: Record<string, number> = productCostMapRef.current
   ): number {
     if (productId) {
       const byId = costMapArg[`id:${productId}`];
@@ -798,21 +1136,11 @@ export default function InventoryPage() {
       profit,
     };
 
-    const storageKey = buildTenantStorageKey(
-      SALES_LEDGER_BASE_KEY,
-      activeTenantIdRef.current
-    );
-
+    const tenantKey = activeTenantIdRef.current || "default";
     setDailySaleEntries((prev) => {
-      const next = [newSaleRow, ...prev];
-      safeJsonWrite(storageKey, next);
-      return next;
-    });
-
-    setSalesEntries((prev) => {
-      const next = [newSaleRow, ...prev];
-      safeJsonWrite(storageKey, next);
-      return next;
+      const merged = mergeAndSaveSalesList(tenantKey, [newSaleRow], prev);
+      setSalesEntries(merged);
+      return merged;
     });
   }
 
@@ -826,36 +1154,14 @@ export default function InventoryPage() {
       salePrice: priceVal,
       billRef: "Moved from Stock (QR/Checkout)",
     });
-    setProducts((prev) => prev.filter((item) => item.id !== prod.id));
+    setProducts((prev) => {
+      const next = prev.filter((item) => item.id !== prod.id);
+      productsRef.current = next;
+      return next;
+    });
     setError(
       `✔ "${prod.name}" کو STOCK سے نکال کر DAILY SALE خانے میں منتقل کر دیا گیا ہے۔`
     );
-  }
-
-  function handleQuickSaleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!quickSaleItemName.trim()) {
-      alert("براہِ کرم بیچی گئی آئٹم کا نام لکھیں۔");
-      return;
-    }
-    const qNum = Math.max(1, parseInt(quickSaleQty, 10) || 1);
-    const sNum = Math.max(0, parseNumericValue(quickSalePrice, 0));
-    const targetDate = quickSaleDate || getTodayDateStr();
-
-    recordDailySaleItem({
-      itemName: quickSaleItemName.trim(),
-      qty: qNum,
-      salePrice: sNum,
-      billRef: quickSaleBillRef.trim() || "QR / Counter Sale",
-      dateStr: targetDate,
-    });
-
-    setSaleFilterDate(targetDate);
-    setQuickSaleItemName("");
-    setQuickSaleQty("1");
-    setQuickSalePrice("");
-    setQuickSaleBillRef("");
-    setError(`✔ سیل (${targetDate}) DAILY SALE خانے میں محفوظ ہو گئی ہے۔`);
   }
 
   function saveCustomerAccounts(nextList: CustomerKhataAccount[]) {
@@ -1373,6 +1679,7 @@ export default function InventoryPage() {
       0.78
     );
   }
+
   async function saveWholesalePurchaseItem(params: {
     itemName: string;
     itemSku: string;
@@ -1433,9 +1740,10 @@ export default function InventoryPage() {
       const idx = prev.findIndex(
         (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
       );
+      let nextList: Product[];
       if (idx >= 0 && prev[idx]) {
         const current = prev[idx];
-        return prev.map((item, i) =>
+        nextList = prev.map((item, i) =>
           i === idx
             ? {
                 ...current,
@@ -1445,17 +1753,20 @@ export default function InventoryPage() {
               }
             : item
         );
+      } else {
+        nextList = [
+          {
+            id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+            name: cleanName,
+            sku: cleanSku,
+            price: String(parsedSale),
+            stockQty: nextStockQty,
+          } as unknown as Product,
+          ...prev,
+        ];
       }
-      return [
-        {
-          id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
-          name: cleanName,
-          sku: cleanSku,
-          price: String(parsedSale),
-          stockQty: nextStockQty,
-        } as unknown as Product,
-        ...prev,
-      ];
+      productsRef.current = nextList;
+      return nextList;
     });
 
     setTodayDate(activeDate);
@@ -1490,12 +1801,14 @@ export default function InventoryPage() {
               (p.sku || "").toLowerCase() !== cleanSku.toLowerCase()
           );
           const exists = withoutLocal.findIndex((p) => p.id === createdProduct.id);
-          if (exists >= 0) {
-            return withoutLocal.map((p) =>
-              p.id === createdProduct.id ? createdProduct : p
-            );
-          }
-          return [createdProduct, ...withoutLocal];
+          const updatedList =
+            exists >= 0
+              ? withoutLocal.map((p) =>
+                  p.id === createdProduct.id ? createdProduct : p
+                )
+              : [createdProduct, ...withoutLocal];
+          productsRef.current = updatedList;
+          return updatedList;
         });
       }
 
@@ -1867,7 +2180,7 @@ export default function InventoryPage() {
 
       <PageHeader
         title="STOCK — Inventory & Wholesale Purchase"
-        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور ڈیلی سیل / اسٹاک کے الگ خانے۔"
+        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور چیک آؤٹ/بارکوڈ اسکین سے آنے والی ڈیلی سیل کا علیحدہ خانہ۔"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1962,7 +2275,7 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      {/* ڈیلی سیل کا علیحدہ خانہ (DAILY SALE BOX) */}
+      {/* ڈیلی سیل کا علیحدہ خانہ (چیک آؤٹ / بارکوڈ اسکین سے خود بخود آنے والی سیل) */}
       <Card className="mb-6 border-emerald-300 bg-emerald-50/30">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1971,16 +2284,16 @@ export default function InventoryPage() {
                 DAILY SALE — علیحدہ سیل خانہ ({filteredDailySales.length})
               </CardTitle>
               <p className="mt-1 text-xs text-slate-600">
-                یہاں صرف گاہکوں کو بیچی گئی آئٹمز / QR / چیک آؤٹ سیل تاریخ کے حساب سے دکھائی جاتی ہیں۔
+                چیک آؤٹ سے بارکوڈ/QR اسکین کر کے بننے والے بل خود بخود یہاں آتے ہیں — آج کتنی سیل ہوئی اور کتنی آئٹمز بکیں۔
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs">
               <span className="rounded bg-emerald-100 px-3 py-1 font-semibold text-emerald-900">
-                Today Sale ({todayDate}): {formatMoney(todaySalesTotal)}
+                Today Sale ({todayDate}): {formatMoney(todaySalesTotal)} ({todaySoldQty} items)
               </span>
               <span className="rounded bg-blue-100 px-3 py-1 font-semibold text-blue-900">
                 Selected Date ({saleFilterDate || "All"}):{" "}
-                {formatMoney(filteredDailySaleTotal)} ({filteredDailySaleQty} qty)
+                {formatMoney(filteredDailySaleTotal)} ({filteredDailySaleQty} items)
               </span>
             </div>
           </div>
@@ -2012,48 +2325,31 @@ export default function InventoryPage() {
                 تمام تاریخیں
               </Button>
             </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  void syncCheckoutSalesNow(
+                    productCostMapRef.current,
+                    productsRef.current
+                  )
+                }
+              >
+                ↻ Sync Checkout Sales
+              </Button>
+              <Button
+                type="button"
+                onClick={() => router.push("/checkout")}
+              >
+                Scan &amp; Bill at Checkout
+              </Button>
+            </div>
           </div>
-
-          <form
-            onSubmit={handleQuickSaleSubmit}
-            className="grid gap-2 rounded-lg border border-emerald-200 bg-white p-3 sm:grid-cols-2 lg:grid-cols-6"
-          >
-            <Input
-              value={quickSaleItemName}
-              onChange={(e) => setQuickSaleItemName(e.target.value)}
-              placeholder="بیچی گئی آئٹم کا نام *"
-              required
-            />
-            <Input
-              type="number"
-              min="1"
-              value={quickSaleQty}
-              onChange={(e) => setQuickSaleQty(e.target.value)}
-              placeholder="مقدار"
-            />
-            <Input
-              type="number"
-              step="any"
-              value={quickSalePrice}
-              onChange={(e) => setQuickSalePrice(e.target.value)}
-              placeholder="سیل ریٹ (Rs)"
-            />
-            <Input
-              value={quickSaleBillRef}
-              onChange={(e) => setQuickSaleBillRef(e.target.value)}
-              placeholder="بل / QR حوالہ"
-            />
-            <Input
-              type="date"
-              value={quickSaleDate}
-              onChange={(e) => setQuickSaleDate(e.target.value)}
-            />
-            <Button type="submit">+ Daily Sale میں ڈالیں</Button>
-          </form>
 
           {filteredDailySales.length === 0 ? (
             <p className="text-sm text-slate-500">
-              اس تاریخ ({saleFilterDate || "تمام"}) کے لیے کوئی سیل ریکارڈ نہیں ہے۔
+              اس تاریخ ({saleFilterDate || "تمام"}) کے لیے ابھی کوئی سیل ریکارڈ نہیں آیا۔ چیک آؤٹ سے بارکوڈ/QR اسکین کر کے بل بنائیں تو یہاں خود بخود آ جائے گا۔
             </p>
           ) : (
             <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -3053,4 +3349,3 @@ export default function InventoryPage() {
       </Card>
     </AppShell>
   );
-}
