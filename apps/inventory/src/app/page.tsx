@@ -1181,3 +1181,1209 @@ export default function InventoryPage() {
 
     return createdProduct || null;
   }
+  async function handleAddAllScannedBillItems() {
+    if (scannedBillItems.length === 0) return;
+    try {
+      const activeBillLabel = supplierOrBill.trim() || "Scanned Stock Bill";
+      for (const row of scannedBillItems) {
+        await saveWholesalePurchaseItem({
+          itemName: row.name,
+          itemSku: row.sku,
+          itemCostPrice: row.costPrice,
+          itemSalePrice: row.salePrice,
+          itemQty: row.qty,
+          itemAmount: row.amount,
+          billLabel: activeBillLabel,
+        });
+      }
+      setScannedBillItems([]);
+      setScannedBillTotal(null);
+      setActiveLedgerTab("purchase");
+      await loadProducts();
+      setError(
+        `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ ہو گئیں!`
+      );
+    } catch (err) {
+      console.error("Failed to save scanned bill items", err);
+      setError("بل کی آئٹمز سیو کرنے میں خرابی ہوئی۔");
+    }
+  }
+
+  async function handleAddProduct(e: FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
+      alert("براہ کرم پروڈکٹ کا نام اور قیمت درج کریں!");
+      return;
+    }
+
+    try {
+      const cleanCode =
+        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+      const qtyNum = parseInt(stockQty, 10) || 1;
+      const costNum = parseNumericValue(
+        costPrice.trim() || salePrice.trim(),
+        0
+      );
+      const saleNum = parseNumericValue(
+        salePrice.trim() || costPrice.trim(),
+        costNum
+      );
+      const computedLineAmount = Math.round(costNum * qtyNum * 100) / 100;
+
+      await saveWholesalePurchaseItem({
+        itemName: name.trim(),
+        itemSku: cleanCode,
+        itemCostPrice: String(costNum),
+        itemSalePrice: String(saleNum),
+        itemQty: qtyNum,
+        itemAmount: computedLineAmount,
+        billLabel: supplierOrBill.trim() || "New Stock Entry",
+      });
+
+      collectBarcodeEntry(cleanCode, selectedChannel);
+
+      setName("");
+      setSku("");
+      setCostPrice("");
+      setSalePrice("");
+      setStockQty("100");
+      setActiveLedgerTab("purchase");
+      await loadProducts();
+      setError(
+        "✔ نیا اسٹاک انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گیا ہے!"
+      );
+    } catch (err) {
+      console.error("Failed to add product", err);
+      setError("پروڈکٹ سیو کرنے میں خرابی ہوئی۔");
+    }
+  }
+
+  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target?.result;
+      if (typeof text !== "string") return;
+
+      const lines = text.split("\n");
+      let importedCount = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const rawLine = lines[i];
+        if (rawLine === undefined) continue;
+
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        const cols = line.split(",");
+        const [
+          rawSku = "",
+          rawName = "",
+          rawPrice = "100",
+          rawStock = "50",
+          rawCost = "",
+        ] = cols.map((c) => c.replace(/["']/g, "").trim());
+
+        if (!rawName) continue;
+
+        const pSku =
+          rawSku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+        const parsedSale = Number(rawPrice);
+        const pSale =
+          !Number.isNaN(parsedSale) && parsedSale >= 0
+            ? String(parsedSale)
+            : "100";
+        const parsedCost = rawCost ? Number(rawCost) : parsedSale;
+        const pCost =
+          !Number.isNaN(parsedCost) && parsedCost >= 0
+            ? String(parsedCost)
+            : pSale;
+        const parsedStock = parseInt(rawStock, 10);
+        const pStock =
+          !Number.isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 50;
+
+        try {
+          const saved = await saveWholesalePurchaseItem({
+            itemName: rawName,
+            itemSku: pSku,
+            itemCostPrice: pCost,
+            itemSalePrice: pSale,
+            itemQty: pStock,
+            itemAmount: Math.round(Number(pCost) * pStock * 100) / 100,
+            billLabel: "CSV Import",
+          });
+          if (saved) {
+            importedCount++;
+          }
+        } catch {}
+      }
+
+      alert(`کامیابی کے ساتھ ${importedCount} پروڈکٹس امپورٹ ہو گئی ہیں!`);
+      loadProducts();
+    };
+    reader.readAsText(file);
+  };
+
+  function exportToCSV() {
+    if (products.length === 0) {
+      alert("No products available to export.");
+      return;
+    }
+    const headers = [
+      "Barcode / SKU",
+      "Item Name",
+      "Cost Price (Rs)",
+      "Sale Price (Rs)",
+      "Stock Qty",
+      "Status",
+    ];
+    const rows = products.map((p) => {
+      const uCost = lookupUnitCost(
+        p.id,
+        p.sku,
+        parseFloat(p.price || "0") || 0
+      );
+      return [
+        `"${p.sku || ""}"`,
+        `"${p.name.replace(/"/g, '""')}"`,
+        uCost,
+        p.price,
+        p.stockQty,
+        p.stockQty > 5
+          ? "In Stock"
+          : p.stockQty > 0
+          ? "Low Stock"
+          : "Out of Stock",
+      ];
+    });
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    const safeStoreName = storeInfo.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "_");
+    link.setAttribute(
+      "download",
+      `${safeStoreName}_inventory_${new Date().toISOString().slice(0, 10)}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  const filteredProducts = products.filter((p) => {
+    const matchesSearch =
+      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
+    return matchesSearch;
+  });
+
+  const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
+  const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
+
+  const todaySales = salesEntries.filter((e) => e.date === todayDate);
+  const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
+  const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
+  const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
+  const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
+
+  const todayKhata = khataEntries.filter((e) => e.date === todayDate);
+  const todayCashIn = todayKhata
+    .filter((k) => k.entryType === "cash_in")
+    .reduce((s, k) => s + k.amount, 0);
+  const todayKhataOut = todayKhata
+    .filter((k) => k.entryType === "khata" || k.entryType === "expense")
+    .reduce((s, k) => s + k.amount, 0);
+  const khataHisabBalance = todaySalesTotal + todayCashIn - todayKhataOut;
+
+  const allDates = Array.from(
+    new Set([
+      ...purchaseEntries.map((p) => p.date),
+      ...salesEntries.map((s) => s.date),
+      ...khataEntries.map((k) => k.date),
+      todayDate,
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+
+  const dateClosingSummary = allDates.map((d) => {
+    const pRows = purchaseEntries.filter((p) => p.date === d);
+    const sRows = salesEntries.filter((s) => s.date === d);
+    const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
+    const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
+    const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
+    const sQty = sRows.reduce((acc, r) => acc + r.qty, 0);
+    const profitTotal = sRows.reduce((acc, r) => acc + r.profit, 0);
+    const isClosed = d < todayDate;
+
+    return {
+      date: d,
+      pQty,
+      pTotal,
+      sQty,
+      sTotal,
+      profitTotal,
+      isClosed,
+    };
+  });
+
+  const scannedItemsSum = scannedBillItems.reduce(
+    (sum, item) => sum + item.amount,
+    0
+  );
+  const displayScannedTotal =
+    scannedBillTotal !== null && scannedBillTotal > 0
+      ? scannedBillTotal
+      : scannedItemsSum;
+
+  return (
+    <AppShell
+      title="Inventory"
+      nav={
+        <nav className="flex gap-4 text-sm">
+          <a href="/dashboard" className="text-slate-600 hover:text-slate-900">
+            Dashboard
+          </a>
+          <a href="/inventory" className="font-medium text-slate-900">
+            Inventory
+          </a>
+          <a href="/checkout" className="text-slate-600 hover:text-slate-900">
+            Checkout
+          </a>
+        </nav>
+      }
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
+          <p className="text-sm font-medium text-slate-600">
+            {storeInfo.details}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-slate-600">
+          {storeInfo.phone && (
+            <span className="rounded bg-slate-100 px-3 py-1 font-medium text-slate-700">
+              📞 {storeInfo.phone}
+            </span>
+          )}
+          <span className="rounded bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+            Active Date: {todayDate}
+          </span>
+        </div>
+      </div>
+
+      <PageHeader
+        title="STOCK — Inventory & Wholesale Purchase"
+        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور الگ لیجرز۔"
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => router.push("/checkout")}
+            >
+              Checkout Counter
+            </Button>
+            <Button type="button" variant="outline" onClick={exportToCSV}>
+              Export CSV
+            </Button>
+            <label className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50">
+              Import CSV
+              <input
+                type="file"
+                accept=".csv"
+                onChange={handleCSVImport}
+                className="hidden"
+              />
+            </label>
+          </div>
+        }
+      />
+
+      {error && (
+        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+          {error}
+        </div>
+      )}
+
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              STOCK — Today Purchase Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">
+              {todayPurchaseQty}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Sold Qty
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-slate-900">{todaySoldQty}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Sales Total
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-emerald-700">
+              {formatMoney(todaySalesTotal)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Cost: {formatMoney(todayCostOfSold)}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-xs font-semibold uppercase text-slate-500">
+              Today Net Profit / Hisab
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold text-blue-700">
+              {formatMoney(todayNetProfit)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Khata Balance: {formatMoney(khataHisabBalance)}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mb-6 grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>STOCK — Add / Restock Product</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleAddProduct} className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Supplier / Bill Name
+                  </label>
+                  <Input
+                    value={supplierOrBill}
+                    onChange={(e) => setSupplierOrBill(e.target.value)}
+                    placeholder="Bill supplier / customer name"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Barcode / SKU
+                  </label>
+                  <Input
+                    value={sku}
+                    onChange={(e) => handleBarcodeLookup(e.target.value)}
+                    placeholder="Scan or enter SKU"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-700">
+                  Product Name
+                </label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Enter product name"
+                  required
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Rate / Cost Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={costPrice}
+                    onChange={(e) => setCostPrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Sale Price (Rs)
+                  </label>
+                  <Input
+                    type="number"
+                    step="any"
+                    value={salePrice}
+                    onChange={(e) => setSalePrice(e.target.value)}
+                    placeholder="0"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">
+                    Qty / Stock
+                  </label>
+                  <Input
+                    type="number"
+                    value={stockQty}
+                    onChange={(e) => setStockQty(e.target.value)}
+                    placeholder="100"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-2">
+                <Button type="submit">Save to STOCK</Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={cameraOpen ? stopCamera : startCameraScanner}
+                >
+                  {cameraOpen ? "Stop Camera" : "Scan Bill / Product"}
+                </Button>
+              </div>
+            </form>
+
+            {cameraOpen && (
+              <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-950 p-3">
+                <video
+                  ref={videoRef}
+                  className="max-h-64 w-full rounded bg-black object-contain"
+                  playsInline
+                  muted
+                />
+                <canvas ref={canvasRef} className="hidden" />
+                <div className="flex justify-end gap-2">
+                  <Button
+                    type="button"
+                    disabled={scanningPhoto}
+                    onClick={captureAndScanWholesale}
+                  >
+                    {scanningPhoto ? "Scanning..." : "Capture & Scan"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {scannedBillItems.length > 0 && (
+              <div className="mt-4 rounded-lg border border-emerald-300 bg-emerald-50/80 p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-emerald-200 pb-2">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded bg-emerald-800 px-2 py-0.5 text-xs font-bold uppercase text-white">
+                        STOCK
+                      </span>
+                      <span className="text-sm font-bold text-emerald-950">
+                        {supplierOrBill.trim() || "Scanned Bill"}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs font-medium text-emerald-900">
+                      Items ({scannedBillItems.length}) • Total:{" "}
+                      <strong>{formatMoney(displayScannedTotal)}</strong>
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    onClick={handleAddAllScannedBillItems}
+                  >
+                    Add All Items
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {scannedBillItems.map((it, idx) => (
+                    <div
+                      key={`${it.sku}-${idx}`}
+                      className="rounded-md border border-emerald-200 bg-white p-2.5 text-xs text-slate-900 shadow-2xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-950">
+                          {idx + 1}. {it.name}
+                        </span>
+                        <span className="font-mono text-[11px] text-slate-500">
+                          {it.sku}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[11px] text-slate-700">
+                        <span>
+                          Qty: <strong>{it.qty}</strong>
+                        </span>
+                        <span>
+                          Rate: <strong>Rs {it.costPrice}</strong>
+                        </span>
+                        <span>
+                          Amount: <strong>{formatMoney(it.amount)}</strong>
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Scanner &amp; Receipt Printer</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {(["Barcode", "USB", "Bluetooth", "Keyboard"] as DeviceChannel[]).map(
+                (ch) => (
+                  <Button
+                    key={ch}
+                    type="button"
+                    variant={selectedChannel === ch ? "default" : "outline"}
+                    onClick={() => handleConnectChannel(ch)}
+                  >
+                    {ch}
+                  </Button>
+                )
+              )}
+            </div>
+
+            <p className="text-xs text-slate-600">{deviceStatusText}</p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePrintCustomerReceipt}
+              >
+                Print Receipt
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => collectBarcodeEntry(sku || "TEST-SKU", selectedChannel)}
+              >
+                Log Code
+              </Button>
+            </div>
+
+            {collectedCodes.length > 0 && (
+              <div className="max-h-40 overflow-y-auto rounded border border-slate-200 p-2 text-xs">
+                {collectedCodes.map((c) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center justify-between border-b border-slate-100 py-1 last:border-b-0"
+                  >
+                    <span>
+                      <strong>{c.code}</strong> ({c.channel})
+                      {c.matchedName ? ` — ${c.matchedName}` : ""}
+                    </span>
+                    <span className="text-slate-500">{c.time}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>STOCK — Products ({filteredProducts.length})</CardTitle>
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name or SKU..."
+              className="max-w-xs"
+            />
+          </div>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <p className="text-sm text-slate-500">Loading products...</p>
+          ) : filteredProducts.length === 0 ? (
+            <p className="text-sm text-slate-500">No products found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-4">SKU</th>
+                    <th className="py-2 pr-4">Name</th>
+                    <th className="py-2 pr-4">Cost</th>
+                    <th className="py-2 pr-4">Sale Price</th>
+                    <th className="py-2 pr-4">Stock</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProducts.map((p) => {
+                    const uCost = lookupUnitCost(
+                      p.id,
+                      p.sku,
+                      parseFloat(p.price || "0") || 0
+                    );
+                    return (
+                      <tr key={p.id} className="border-b border-slate-100">
+                        <td className="py-2 pr-4 font-mono text-xs">{p.sku || "-"}</td>
+                        <td className="py-2 pr-4 font-medium">{p.name}</td>
+                        <td className="py-2 pr-4">{formatMoney(uCost)}</td>
+                        <td className="py-2 pr-4">
+                          {formatMoney(parseFloat(p.price || "0") || 0)}
+                        </td>
+                        <td className="py-2 pr-4">{p.stockQty}</td>
+                        <td className="py-2">
+                          <Badge
+                            variant={
+                              p.stockQty > 5
+                                ? "success"
+                                : p.stockQty > 0
+                                ? "warning"
+                                : "destructive"
+                            }
+                          >
+                            {p.stockQty > 5
+                              ? "In Stock"
+                              : p.stockQty > 0
+                              ? "Low Stock"
+                              : "Out of Stock"}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-bold tracking-wide uppercase text-slate-900">
+                SEPARATE DAILY LEDGERS ({todayDate})
+              </h2>
+              <span className="rounded border border-emerald-700/60 bg-emerald-900/70 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+                {`Day Open (${todayDate}) • rolls over at 12:00 AM`}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant={activeLedgerTab === "purchase" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("purchase")}
+              >
+                STOCK Purchase ({purchaseEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "sales" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("sales")}
+              >
+                Sales ({salesEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "khata" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("khata")}
+              >
+                Khata / Hisab ({customerAccounts.length})
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {activeLedgerTab === "purchase" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Supplier / Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Rate</th>
+                    <th className="py-2">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.supplierOrBill}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.costPrice)}</td>
+                      <td className="py-2 font-semibold">
+                        {formatMoney(row.totalPurchase)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "sales" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Sale</th>
+                    <th className="py-2">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.billRef}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.totalSale)}</td>
+                      <td className="py-2 font-semibold text-emerald-700">
+                        {formatMoney(row.profit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "khata" && (() => {
+            const totalToCollect = customerAccounts.reduce(
+              (sum, c) => sum + (c.balance > 0 ? c.balance : 0),
+              0
+            );
+            const activeDebtors = customerAccounts.filter((c) => c.balance > 0);
+            const filteredCustomers = customerAccounts.filter((c) => {
+              const q = khataSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                c.name.toLowerCase().includes(q) ||
+                c.phone.toLowerCase().includes(q) ||
+                c.address.toLowerCase().includes(q)
+              );
+            });
+            const activeCustomer =
+              customerAccounts.find((c) => c.id === selectedCustomerId) ||
+              activeDebtors[0] ||
+              filteredCustomers[0] ||
+              null;
+
+            const handleTopWhatsAppReminderClick = () => {
+              if (activeCustomer && activeCustomer.phone.trim()) {
+                openWhatsAppReminder(activeCustomer);
+                return;
+              }
+              setNewCustDate(getTodayDateStr());
+              setKhataModalMode("new_customer");
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-[#f7f5ee] p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-slate-600">
+                        To collect (کل وصولی)
+                      </p>
+                      <p className="text-2xl font-bold text-slate-900">
+                        {formatMoney(totalToCollect)}
+                      </p>
+                    </div>
+                    <span className="mt-4 text-xs font-medium text-slate-600">
+                      from {activeDebtors.length} customers
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleTopWhatsAppReminderClick}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-[#f9ecea] px-4 py-2.5 text-sm font-semibold text-rose-950 transition hover:bg-rose-100"
+                  >
+                    <span>💬</span>
+                    <span>
+                      {activeCustomer
+                        ? `Remind on WhatsApp (${activeCustomer.name})`
+                        : "Remind on WhatsApp"}
+                    </span>
+                  </button>
+
+                  <div className="mt-3">
+                    <Input
+                      value={khataSearch}
+                      onChange={(e) => setKhataSearch(e.target.value)}
+                      placeholder="Find customer (نام، موبائل یا ایڈریس تلاش کریں)..."
+                      className="bg-white"
+                    />
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {filteredCustomers.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-slate-500">
+                        ابھی کوئی کسٹمر ایڈ نہیں ہے۔ اوپر &quot;Remind on WhatsApp&quot; یا نیچے &quot;+ Customer (نیا کھاتہ)&quot; سے کسٹمر شامل کریں۔
+                      </p>
+                    ) : (
+                      filteredCustomers.map((cust) => {
+                        const isSelected = activeCustomer?.id === cust.id;
+                        return (
+                          <div
+                            key={cust.id}
+                            onClick={() => setSelectedCustomerId(cust.id)}
+                            className={`flex cursor-pointer items-center justify-between rounded-lg border bg-white p-3 transition ${
+                              isSelected
+                                ? "border-emerald-600 ring-1 ring-emerald-600"
+                                : "border-slate-200 hover:border-slate-300"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-700">
+                                {getInitials(cust.name)}
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {cust.name}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {cust.phone || "No phone"}
+                                  {cust.address ? ` • ${cust.address}` : ""} • Last:{" "}
+                                  {cust.lastDate}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-sm font-bold ${
+                                  cust.balance > 0
+                                    ? "text-rose-700"
+                                    : "text-emerald-700"
+                                }`}
+                              >
+                                {formatMoney(cust.balance)}
+                              </span>
+                              <button
+                                type="button"
+                                title="Send WhatsApp Reminder"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedCustomerId(cust.id);
+                                  openWhatsAppReminder(cust);
+                                }}
+                                className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                              >
+                                💬
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("received");
+                      }}
+                    >
+                      Money received (وصولی)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("udhaar");
+                      }}
+                    >
+                      + Udhaar / Bill (ادھار)
+                    </Button>
+                    <Button
+                      type="button"
+                      className="bg-emerald-800 text-white hover:bg-emerald-900"
+                      onClick={() => {
+                        setNewCustDate(getTodayDateStr());
+                        setKhataModalMode("new_customer");
+                      }}
+                    >
+                      + Customer (نیا کھاتہ)
+                    </Button>
+                  </div>
+                </div>
+
+                {khataModalMode === "new_customer" && (
+                  <form
+                    onSubmit={handleCreateCustomerKhata}
+                    className="space-y-3 rounded-lg border border-emerald-300 bg-emerald-50/60 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-emerald-950">
+                        نیا کسٹمر کھاتہ کھولیں (+ Customer)
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <Input
+                        value={newCustName}
+                        onChange={(e) => setNewCustName(e.target.value)}
+                        placeholder="کسٹمر کا نام *"
+                        required
+                      />
+                      <Input
+                        value={newCustPhone}
+                        onChange={(e) => setNewCustPhone(e.target.value)}
+                        placeholder="موبائل نمبر (0300...)"
+                      />
+                      <Input
+                        value={newCustAddress}
+                        onChange={(e) => setNewCustAddress(e.target.value)}
+                        placeholder="مکمل ایڈریس"
+                      />
+                      <Input
+                        type="number"
+                        step="any"
+                        value={newCustOpeningUdhaar}
+                        onChange={(e) => setNewCustOpeningUdhaar(e.target.value)}
+                        placeholder="ابتدائی ادھار (Rs)"
+                      />
+                      <Input
+                        type="date"
+                        value={newCustDate}
+                        onChange={(e) => setNewCustDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="submit">Save Customer Khata</Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="border-emerald-300 bg-white text-emerald-900"
+                        onClick={handleSaveAndSendWhatsApp}
+                      >
+                        💬 Save &amp; Send WhatsApp
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {(khataModalMode === "received" || khataModalMode === "udhaar") && (
+                  <form
+                    onSubmit={handleRecordCustomerTx}
+                    className="space-y-3 rounded-lg border border-slate-300 bg-slate-50 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-slate-900">
+                        {khataModalMode === "received"
+                          ? "وصول شدہ رقم درج کریں (Money Received)"
+                          : "نیا ادھار / بل درج کریں (+ Udhaar)"}
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <select
+                        value={txCustomerId || activeCustomer?.id || ""}
+                        onChange={(e) => setTxCustomerId(e.target.value)}
+                        className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                        required
+                      >
+                        {customerAccounts.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.phone || "No #"}) — Bal: {c.balance}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        step="any"
+                        value={txAmount}
+                        onChange={(e) => setTxAmount(e.target.value)}
+                        placeholder="رقم (Rs) *"
+                        required
+                      />
+                      <Input
+                        value={txNote}
+                        onChange={(e) => setTxNote(e.target.value)}
+                        placeholder="تفصیل (مثلاً کیش وصولی / بل #)"
+                      />
+                      <Input
+                        type="date"
+                        value={txDate}
+                        onChange={(e) => setTxDate(e.target.value)}
+                      />
+                      <Button type="submit">
+                        {khataModalMode === "received"
+                          ? "Save Received"
+                          : "Save Udhaar"}
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {activeCustomer && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">
+                          تاریخ وار کھاتہ تفصیل: {activeCustomer.name}
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          موبائل: {activeCustomer.phone || "-"} | ایڈریس:{" "}
+                          {activeCustomer.address || "-"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-slate-100 px-3 py-1 text-xs font-bold text-slate-900">
+                          بقایا بیلنس: {formatMoney(activeCustomer.balance)}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => openWhatsAppReminder(activeCustomer)}
+                        >
+                          💬 WhatsApp Reminder
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                            <th className="py-2 pr-3">Date / Time</th>
+                            <th className="py-2 pr-3">تفصیل (Note)</th>
+                            <th className="py-2 pr-3">ادھار (Given)</th>
+                            <th className="py-2 pr-3">وصول (Received)</th>
+                            <th className="py-2">بقایا (Balance)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeCustomer.transactions.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={5}
+                                className="py-3 text-center text-xs text-slate-500"
+                              >
+                                ابھی تک اس کسٹمر کا کوئی لین دین درج نہیں ہے۔
+                              </td>
+                            </tr>
+                          ) : (
+                            activeCustomer.transactions.map((tx) => (
+                              <tr key={tx.id} className="border-b border-slate-100">
+                                <td className="py-2 pr-3 text-xs">
+                                  {tx.date} {tx.time}
+                                </td>
+                                <td className="py-2 pr-3">{tx.note}</td>
+                                <td className="py-2 pr-3 text-rose-700">
+                                  {tx.type === "udhaar"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 pr-3 text-emerald-700">
+                                  {tx.type === "received"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 font-semibold">
+                                  {formatMoney(tx.balanceAfter)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="mb-2 text-xs font-bold uppercase text-slate-600">
+              Daily Rollover Summary
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="py-2 pr-3">Purchase</th>
+                    <th className="py-2 pr-3">Sales</th>
+                    <th className="py-2 pr-3">Profit</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dateClosingSummary.map((day) => (
+                    <tr key={day.date} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 font-medium">{day.date}</td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.pTotal)} ({day.pQty})
+                      </td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.sTotal)} ({day.sQty})
+                      </td>
+                      <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
+                      <td className="py-2">
+                        <Badge variant={day.isClosed ? "default" : "success"}>
+                          {day.isClosed ? "Closed" : "Open"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </AppShell>
+  );
+}
