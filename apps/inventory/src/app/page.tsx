@@ -886,10 +886,9 @@ export default function InventoryPage() {
     setError(
       isReceived
         ? "✔ وصول شدہ رقم کسٹمر کھاتے میں درج ہو گئی ہے۔"
-        : "✔ نیا ادھار کسٹمر کھاتے میں درج ہو گیا ہے۔"
+        : "✔ نیا ادھار کسٹمر کھاتے میں درج ہو گئی ہے۔"
     );
   }
-
   async function captureAndScanWholesale() {
     if (!videoRef.current || scanningPhoto) return;
 
@@ -917,6 +916,9 @@ export default function InventoryPage() {
           return;
         }
 
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+
         try {
           const formData = new FormData();
           formData.append("image", blob, "wholesale-bill.jpg");
@@ -927,7 +929,12 @@ export default function InventoryPage() {
           const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
             method: "POST",
             body: formData,
+            signal: controller.signal,
           });
+
+          if (res.status === 502 || res.status === 503 || res.status === 504) {
+            throw new Error("HTTP_502");
+          }
 
           if (!res.ok) {
             throw new Error(`HTTP ${res.status}`);
@@ -1150,15 +1157,27 @@ export default function InventoryPage() {
             setError(
               "تصویر ویب ہک تک پہنچ گئی، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
             );
+            document.getElementById("manual-item-input")?.focus();
           }
         } catch (err) {
           console.error("Wholesale scan error:", err);
-          setError(
-            `❌ اسکین رسپانس میں خرابی (${
-              err instanceof Error ? err.message : "نامعلوم"
-            }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
-          );
+          const is502OrTimeout =
+            err instanceof Error &&
+            (err.message === "HTTP_502" || err.name === "AbortError");
+          if (is502OrTimeout) {
+            setError(
+              "اسکین سرور عارضی طور پر مصروف ہے (502) — آئٹم/بل کے خانے میں براہ راست لکھ کر سیو کر لیں۔"
+            );
+            document.getElementById("manual-item-input")?.focus();
+          } else {
+            setError(
+              `❌ اسکین رسپانس میں خرابی (${
+                err instanceof Error ? err.message : "نامعلوم"
+              }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
+            );
+          }
         } finally {
+          window.clearTimeout(timeoutId);
           setScanningPhoto(false);
         }
       },
@@ -1775,6 +1794,7 @@ export default function InventoryPage() {
                   Item
                 </label>
                 <Input
+                  id="manual-item-input"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Enter item"
