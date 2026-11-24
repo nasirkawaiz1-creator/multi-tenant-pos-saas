@@ -24,6 +24,7 @@ const SALES_LEDGER_BASE_KEY = "pos:customerSalesLedger:v1";
 const PRODUCT_COST_MAP_BASE_KEY = "pos:productCostMap:v1";
 const KHATA_LEDGER_BASE_KEY = "pos:dailyKhataLedger:v1";
 const CUSTOMER_KHATA_BOOK_BASE_KEY = "pos:customerKhataBook:v1";
+const LAST_BILL_IMAGE_BASE_KEY = "pos:lastScannedBillImage:v1";
 const MIDNIGHT_ROLLOVER_INTERVAL_MS = 15000;
 
 type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
@@ -198,6 +199,8 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [scanDiagnostic, setScanDiagnostic] = useState("");
+  const [savedBillImage, setSavedBillImage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
   const [activeTenantId, setActiveTenantId] = useState<string>(() =>
@@ -282,6 +285,21 @@ export default function InventoryPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  function persistBillImageDataUrl(dataUrl: string) {
+    if (!dataUrl) return;
+    setSavedBillImage(dataUrl);
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem(
+          buildTenantStorageKey(LAST_BILL_IMAGE_BASE_KEY, activeTenantIdRef.current),
+          dataUrl
+        );
+      }
+    } catch {
+      // ignore storage quota limits on large photos
+    }
+  }
+
   function loadTenantLocalData(tenantKey: string): Record<string, number> {
     const cleanKey = sanitizeTenantId(tenantKey) || "default";
     activeTenantIdRef.current = cleanKey;
@@ -307,6 +325,16 @@ export default function InventoryPage() {
       buildTenantStorageKey(PRODUCT_COST_MAP_BASE_KEY, cleanKey),
       {}
     );
+
+    try {
+      if (typeof window !== "undefined") {
+        const cachedBillImg =
+          localStorage.getItem(
+            buildTenantStorageKey(LAST_BILL_IMAGE_BASE_KEY, cleanKey)
+          ) || "";
+        setSavedBillImage(cachedBillImg);
+      }
+    } catch {}
 
     setPurchaseEntries(savedPurchases);
     setSalesEntries(savedSales);
@@ -473,6 +501,7 @@ export default function InventoryPage() {
   async function startCameraScanner() {
     try {
       setError("");
+      setScanDiagnostic("");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
@@ -889,6 +918,7 @@ export default function InventoryPage() {
         : "✔ نیا ادھار کسٹمر کھاتے میں درج ہو گئی ہے۔"
     );
   }
+
   async function captureAndScanWholesale() {
     if (!videoRef.current || scanningPhoto) return;
 
@@ -901,11 +931,18 @@ export default function InventoryPage() {
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
+    // بل کی تصویر محفوظ کریں تاکہ سرور ایرر یا 502 کی صورت میں بھی تصویر ضائع نہ ہو
+    try {
+      const capturedDataUrl = canvas.toDataURL("image/jpeg", 0.78);
+      persistBillImageDataUrl(capturedDataUrl);
+    } catch {}
+
     setScanningPhoto(true);
+    setScanDiagnostic("");
     setScannedBillTotal(null);
     setEditingIndex(null);
     setError(
-      "📷 نیا اسٹاک / بل اسکین ہو رہا ہے، ٹریڈرز کا نام، آئٹمز اور ریٹ نکالے جا رہے ہیں..."
+      "📷 بل/اسٹاک کی تصویر محفوظ ہو رہی ہے اور آئٹمز نکالے جا رہے ہیں..."
     );
 
     canvas.toBlob(
@@ -932,15 +969,22 @@ export default function InventoryPage() {
             signal: controller.signal,
           });
 
+          const rawText = await res.text();
+
           if (res.status === 502 || res.status === 503 || res.status === 504) {
+            setScanDiagnostic(
+              `HTTP ${res.status}: ${rawText.slice(0, 180) || "Upstream / Gateway error"}`
+            );
             throw new Error("HTTP_502");
           }
 
           if (!res.ok) {
+            setScanDiagnostic(
+              `HTTP ${res.status}: ${rawText.slice(0, 180) || "Request failed"}`
+            );
             throw new Error(`HTTP ${res.status}`);
           }
 
-          const rawText = await res.text();
           let payload: Record<string, unknown> = {};
           try {
             const parsed = JSON.parse(rawText);
@@ -948,6 +992,7 @@ export default function InventoryPage() {
               ? (parsed[0] as Record<string, unknown>) || {}
               : (parsed as Record<string, unknown>) || {};
           } catch {
+            setScanDiagnostic(`Invalid JSON (HTTP 200): ${rawText.slice(0, 180)}`);
             payload = {};
           }
 
@@ -1073,13 +1118,13 @@ export default function InventoryPage() {
                 setCostPrice(first.costPrice);
                 setSalePrice(first.salePrice);
                 setStockQty(String(first.qty));
-                collectBarcodeEntry(first.sku, "Barcode");
               }
               stopCamera();
+              setScanDiagnostic(`HTTP 200: ${parsed.length} items extracted`);
               setError(
-                `✔ نیا اسٹاک اسکین مکمل: ${
-                  traderName ? `بل/ٹریڈر: ${traderName} | ` : ""
-                }${parsed.length} آئٹمز ریٹ اور رقم کے ساتھ آ گئی ہیں۔`
+                `✔ بل کی تصویر محفوظ اور ${
+                  traderName ? `${traderName} — ` : ""
+                }${parsed.length} آئٹمز ڈبوں میں آ گئی ہیں۔`
               );
               return;
             }
@@ -1133,11 +1178,9 @@ export default function InventoryPage() {
           if (extractedName) setName(extractedName);
           if (extractedSku) {
             setSku(extractedSku);
-            collectBarcodeEntry(extractedSku, "Barcode");
           } else if (extractedName && !sku.trim()) {
             const genSku = `POS-${Math.floor(100000 + Math.random() * 900000)}`;
             setSku(genSku);
-            collectBarcodeEntry(genSku, "Barcode");
           }
           if (singleCost > 0) setCostPrice(String(singleCost));
           setSalePrice(String(parseNumericValue(extractedSale, singleCost)));
@@ -1148,14 +1191,30 @@ export default function InventoryPage() {
 
           stopCamera();
           if (extractedName || extractedSku) {
+            setScannedBillItems([
+              {
+                name: extractedName || "آئٹم",
+                sku:
+                  extractedSku ||
+                  `POS-${Math.floor(100000 + Math.random() * 900000)}`,
+                costPrice: String(singleCost),
+                salePrice: String(parseNumericValue(extractedSale, singleCost)),
+                qty: singleQty,
+                amount: singleAmount,
+              },
+            ]);
+            setScanDiagnostic("HTTP 200: 1 item extracted");
             setError(
-              `✔ اسکین مکمل: ${
+              `✔ تصویر محفوظ اور آئٹم ڈبے میں آ گئی: ${
                 traderName ? `${traderName} — ` : ""
               }${extractedName || "آئٹم"} | کوڈ: ${extractedSku || "-"}`
             );
           } else {
+            setScanDiagnostic(
+              `HTTP 200 (Empty items): ${rawText.slice(0, 180)}`
+            );
             setError(
-              "تصویر ویب ہک تک پہنچ گئی، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
+              "بل کی تصویر محفوظ ہے، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر یا ڈبہ بنا کر سیو کر سکتے ہیں۔"
             );
             document.getElementById("manual-item-input")?.focus();
           }
@@ -1164,16 +1223,23 @@ export default function InventoryPage() {
           const is502OrTimeout =
             err instanceof Error &&
             (err.message === "HTTP_502" || err.name === "AbortError");
+          if (!scanDiagnostic) {
+            setScanDiagnostic(
+              `Fetch Error: ${
+                err instanceof Error ? err.message : "Network / Timeout Error"
+              }`
+            );
+          }
           if (is502OrTimeout) {
             setError(
-              "اسکین سرور عارضی طور پر مصروف ہے (502) — آئٹم/بل کے خانے میں براہ راست لکھ کر سیو کر لیں۔"
+              "اسکین سرور عارضی طور پر مصروف ہے (502/Timeout) — بل کی تصویر محفوظ ہے، آئٹم/بل کے خانے میں براہ راست لکھ کر سیو کر لیں۔"
             );
             document.getElementById("manual-item-input")?.focus();
           } else {
             setError(
               `❌ اسکین رسپانس میں خرابی (${
                 err instanceof Error ? err.message : "نامعلوم"
-              }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
+              }) — بل کی تصویر محفوظ ہے، آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
             );
           }
         } finally {
@@ -1182,11 +1248,8 @@ export default function InventoryPage() {
         }
       },
       "image/jpeg",
-      0.85
-    );
-  }
-
-  async function saveWholesalePurchaseItem(params: {
+      0.78
+    async function saveWholesalePurchaseItem(params: {
     itemName: string;
     itemSku: string;
     itemCostPrice: string;
@@ -1695,9 +1758,14 @@ export default function InventoryPage() {
         }
       />
 
-      {error && (
-        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
-          {error}
+      {(error || scanDiagnostic) && (
+        <div className="mb-4 space-y-1 rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-800">
+          {error && <p>{error}</p>}
+          {scanDiagnostic && (
+            <p className="font-mono text-xs text-amber-800">
+              Diagnostic: {scanDiagnostic}
+            </p>
+          )}
         </div>
       )}
 
@@ -1854,6 +1922,26 @@ export default function InventoryPage() {
                 </Button>
               </div>
             </form>
+
+            {savedBillImage && (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                <div className="mb-1.5 flex items-center justify-between text-xs text-slate-600">
+                  <span className="font-semibold">محفوظ شدہ بل کی تصویر</span>
+                  <a
+                    href={savedBillImage}
+                    download={`bill-${todayDate}.jpg`}
+                    className="font-medium text-blue-600 underline"
+                  >
+                    تصویر ڈاؤن لوڈ کریں
+                  </a>
+                </div>
+                <img
+                  src={savedBillImage}
+                  alt="Saved Bill"
+                  className="max-h-44 w-full rounded border bg-white object-contain"
+                />
+              </div>
+            )}
 
             {cameraOpen && (
               <div className="mt-4 space-y-2 rounded-lg border border-slate-200 bg-slate-950 p-3">
@@ -2744,4 +2832,306 @@ export default function InventoryPage() {
       </Card>
     </AppShell>
   );
-}
+});
+  }
+  async function saveWholesalePurchaseItem(params: {
+    itemName: string;
+    itemSku: string;
+    itemCostPrice: string;
+    itemSalePrice: string;
+    itemQty: number;
+    itemAmount?: number;
+    billLabel?: string;
+  }): Promise<{ saved: boolean; backendError?: string }> {
+    const cleanName = params.itemName.trim();
+    const cleanSku =
+      params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+    const parsedCost = parseNumericValue(params.itemCostPrice.trim(), 0);
+    const parsedSale =
+      params.itemSalePrice.trim() !== ""
+        ? parseNumericValue(params.itemSalePrice.trim(), parsedCost)
+        : parsedCost;
+    const cleanQty = params.itemQty > 0 ? params.itemQty : 1;
+
+    const effectiveUnitCost =
+      parsedCost > 0
+        ? parsedCost
+        : params.itemAmount !== undefined && params.itemAmount > 0 && cleanQty > 0
+        ? Math.round((params.itemAmount / cleanQty) * 100) / 100
+        : 0;
+
+    const lineTotal =
+      effectiveUnitCost > 0
+        ? Math.round(effectiveUnitCost * cleanQty * 100) / 100
+        : params.itemAmount !== undefined && params.itemAmount > 0
+        ? Math.round(params.itemAmount * 100) / 100
+        : 0;
+
+    const existingProduct = products.find(
+      (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
+    );
+    const nextStockQty =
+      (existingProduct ? Number(existingProduct.stockQty || 0) : 0) + cleanQty;
+
+    const now = new Date();
+    const activeDate = getTodayDateStr(now);
+
+    saveCostMapping(existingProduct?.id, cleanSku, effectiveUnitCost);
+    appendPurchaseRecord({
+      date: activeDate,
+      time: formatTimeStr(now),
+      supplierOrBill:
+        (params.billLabel || supplierOrBill).trim() || "New Stock / Wholesale",
+      sku: cleanSku,
+      itemName: cleanName,
+      qty: cleanQty,
+      costPrice: effectiveUnitCost,
+      salePrice: parsedSale,
+      totalPurchase: lineTotal,
+    });
+
+    setProducts((prev) => {
+      const idx = prev.findIndex(
+        (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
+      );
+      if (idx >= 0 && prev[idx]) {
+        const current = prev[idx];
+        return prev.map((item, i) =>
+          i === idx
+            ? {
+                ...current,
+                name: cleanName || current.name,
+                price: String(parsedSale),
+                stockQty: nextStockQty,
+              }
+            : item
+        );
+      }
+      return [
+        {
+          id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+          name: cleanName,
+          sku: cleanSku,
+          price: String(parsedSale),
+          stockQty: nextStockQty,
+        } as unknown as Product,
+        ...prev,
+      ];
+    });
+
+    setTodayDate(activeDate);
+
+    try {
+      const response = await Promise.race([
+        apiFetch<Product | { data: Product }>("/products", {
+          method: "POST",
+          body: JSON.stringify({
+            name: cleanName,
+            sku: cleanSku,
+            price: String(parsedSale),
+            stockQty: nextStockQty,
+          }),
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("API timeout (5s)")), 5000)
+        ),
+      ]);
+
+      const createdProduct =
+        response && typeof response === "object" && "data" in response
+          ? (response as { data: Product }).data
+          : (response as Product);
+
+      if (createdProduct && createdProduct.id) {
+        saveCostMapping(createdProduct.id, createdProduct.sku, effectiveUnitCost);
+        setProducts((prev) => {
+          const withoutLocal = prev.filter(
+            (p) =>
+              !String(p.id).startsWith("LOCAL-") ||
+              (p.sku || "").toLowerCase() !== cleanSku.toLowerCase()
+          );
+          const exists = withoutLocal.findIndex((p) => p.id === createdProduct.id);
+          if (exists >= 0) {
+            return withoutLocal.map((p) =>
+              p.id === createdProduct.id ? createdProduct : p
+            );
+          }
+          return [createdProduct, ...withoutLocal];
+        });
+      }
+
+      return { saved: true };
+    } catch (err) {
+      return {
+        saved: true,
+        backendError: err instanceof Error ? err.message : "Server sync failed",
+      };
+    }
+  }
+
+  async function handleAddAllScannedBillItems() {
+    if (scannedBillItems.length === 0 || savingStock) return;
+    setSavingStock(true);
+    setError(
+      "⏳ بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ کی جا رہی ہیں..."
+    );
+    try {
+      const activeBillLabel = supplierOrBill.trim() || "Scanned Stock Bill";
+      let failCount = 0;
+      let lastBackendErr = "";
+
+      for (const row of scannedBillItems) {
+        const res = await saveWholesalePurchaseItem({
+          itemName: row.name,
+          itemSku: row.sku,
+          itemCostPrice: row.costPrice,
+          itemSalePrice: row.salePrice,
+          itemQty: row.qty,
+          itemAmount: row.amount,
+          billLabel: activeBillLabel,
+        });
+        if (res.backendError) {
+          failCount++;
+          lastBackendErr = res.backendError;
+        }
+      }
+
+      setScannedBillItems([]);
+      setScannedBillTotal(null);
+      setEditingIndex(null);
+      setActiveLedgerTab("purchase");
+
+      if (failCount === 0) {
+        setError(
+          `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ ہو گئیں!`
+        );
+      } else {
+        setError(
+          `✔ آئٹمز لوکل STOCK / Purchase Ledger میں محفوظ ہو گئیں، تاہم سرور پر ${failCount} آئٹمز سنک نہیں ہو سکیں (${lastBackendErr})۔`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to save scanned bill items", err);
+      setError("❌ بل کی آئٹمز سیو کرنے میں خرابی ہوئی۔");
+    } finally {
+      setSavingStock(false);
+    }
+  }
+
+  async function handleAddProduct(e: FormEvent) {
+    e.preventDefault();
+    if (savingStock) return;
+    if (!name.trim() || (!salePrice.trim() && !costPrice.trim())) {
+      alert("براہ کرم آئٹم اور قیمت درج کریں!");
+      return;
+    }
+
+    setSavingStock(true);
+    setError("⏳ نیا اسٹاک محفوظ کیا جا رہا ہے...");
+    try {
+      const cleanCode =
+        sku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+      const qtyNum = parseInt(stockQty, 10) || 1;
+      const costNum = parseNumericValue(
+        costPrice.trim() || salePrice.trim(),
+        0
+      );
+      const saleNum = parseNumericValue(
+        salePrice.trim() || costPrice.trim(),
+        costNum
+      );
+      const computedLineAmount = Math.round(costNum * qtyNum * 100) / 100;
+
+      const res = await saveWholesalePurchaseItem({
+        itemName: name.trim(),
+        itemSku: cleanCode,
+        itemCostPrice: String(costNum),
+        itemSalePrice: String(saleNum),
+        itemQty: qtyNum,
+        itemAmount: computedLineAmount,
+        billLabel: supplierOrBill.trim() || "New Stock Entry",
+      });
+
+      collectBarcodeEntry(cleanCode, selectedChannel);
+
+      setName("");
+      setSku("");
+      setCostPrice("");
+      setSalePrice("");
+      setStockQty("100");
+      setActiveLedgerTab("purchase");
+
+      if (!res.backendError) {
+        setError(
+          "✔ نیا اسٹاک انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گیا ہے!"
+        );
+      } else {
+        setError(
+          `✔ اسٹاک لوکل لیجر میں محفوظ ہو گیا ہے، لیکن سرور سنک میں مسئلہ آیا (${res.backendError})۔`
+        );
+      }
+    } catch (err) {
+      console.error("Failed to add product", err);
+      setError("❌ آئٹم سیو کرنے میں خرابی ہوئی۔");
+    } finally {
+      setSavingStock(false);
+    }
+  }
+
+  const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target?.result;
+      if (typeof text !== "string") return;
+
+      const lines = text.split("\n");
+      let importedCount = 0;
+
+      for (let i = 1; i < lines.length; i++) {
+        const rawLine = lines[i];
+        if (rawLine === undefined) continue;
+
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        const cols = line.split(",");
+        const [
+          rawSku = "",
+          rawName = "",
+          rawPrice = "100",
+          rawStock = "50",
+          rawCost = "",
+        ] = cols.map((c) => c.replace(/["']/g, "").trim());
+
+        if (!rawName) continue;
+
+        const pSku =
+          rawSku || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
+        const parsedSale = Number(rawPrice);
+        const pSale =
+          !Number.isNaN(parsedSale) && parsedSale >= 0
+            ? String(parsedSale)
+            : "100";
+        const parsedCost = rawCost ? Number(rawCost) : parsedSale;
+        const pCost =
+          !Number.isNaN(parsedCost) && parsedCost >= 0
+            ? String(parsedCost)
+            : pSale;
+        const parsedStock = parseInt(rawStock, 10);
+        const pStock =
+          !Number.isNaN(parsedStock) && parsedStock >= 0 ? parsedStock : 50;
+
+        try {
+          const saved = await saveWholesalePurchaseItem({
+            itemName: rawName,
+            itemSku: pSku,
+            itemCostPrice: pCost,
+            itemSalePrice: pSale,
+            itemQty: pStock,
+            itemAmount: Math.round(Number(pCost) * pStock * 100) / 100,
+            billLabel: "CSV Import",
+          });
+          if (saved.saved) {
