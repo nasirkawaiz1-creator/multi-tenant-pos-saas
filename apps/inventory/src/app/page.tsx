@@ -19,11 +19,11 @@ import {
 const N8N_PRODUCT_SCAN_WEBHOOK_URL =
   "https://primary-production-34a63.up.railway.app/webhook/store-onboarding";
 
-const PURCHASE_LEDGER_KEY = "pos:wholesalePurchaseLedger:v1";
-const SALES_LEDGER_KEY = "pos:customerSalesLedger:v1";
-const PRODUCT_COST_MAP_KEY = "pos:productCostMap:v1";
-const KHATA_LEDGER_KEY = "pos:dailyKhataLedger:v1";
-const CUSTOMER_KHATA_BOOK_KEY = "pos:customerKhataBook:v1";
+const PURCHASE_LEDGER_BASE_KEY = "pos:wholesalePurchaseLedger:v1";
+const SALES_LEDGER_BASE_KEY = "pos:customerSalesLedger:v1";
+const PRODUCT_COST_MAP_BASE_KEY = "pos:productCostMap:v1";
+const KHATA_LEDGER_BASE_KEY = "pos:dailyKhataLedger:v1";
+const CUSTOMER_KHATA_BOOK_BASE_KEY = "pos:customerKhataBook:v1";
 const MIDNIGHT_ROLLOVER_INTERVAL_MS = 15000;
 
 type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
@@ -33,6 +33,7 @@ interface StoreProfile {
   name: string;
   details: string;
   phone: string;
+  tenantId?: string;
 }
 
 interface PurchaseEntry {
@@ -108,6 +109,40 @@ interface CollectedCodeEntry {
   matchedName?: string;
 }
 
+function sanitizeTenantId(raw: unknown): string {
+  if (raw === null || raw === undefined) return "";
+  return String(raw).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function getTenantIdFromToken(): string {
+  if (typeof window === "undefined") return "default";
+  const token = getToken() || "";
+  try {
+    const parts = token.split(".");
+    if (parts.length === 3 && parts[1]) {
+      const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = JSON.parse(atob(normalized)) as Record<string, unknown>;
+      const candidate =
+        decoded.tenantId ??
+        decoded.tenant_id ??
+        decoded.storeId ??
+        decoded.store_id ??
+        decoded.sub ??
+        decoded.phone ??
+        decoded.email ??
+        "";
+      const clean = sanitizeTenantId(candidate);
+      if (clean) return clean;
+    }
+  } catch {}
+  return sanitizeTenantId(token.slice(-16)) || "default";
+}
+
+function buildTenantStorageKey(baseKey: string, tenantId: string): string {
+  const cleanTenant = sanitizeTenantId(tenantId) || getTenantIdFromToken();
+  return `${baseKey}:${cleanTenant}`;
+}
+
 function getTodayDateStr(dateObj: Date = new Date()): string {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, "0");
@@ -164,6 +199,11 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [activeTenantId, setActiveTenantId] = useState<string>(() =>
+    getTenantIdFromToken()
+  );
+  const activeTenantIdRef = useRef<string>(activeTenantId);
 
   const [supplierOrBill, setSupplierOrBill] = useState("");
   const [scannedBillTotal, setScannedBillTotal] = useState<number | null>(null);
@@ -229,9 +269,10 @@ export default function InventoryPage() {
   const [bluetoothPrinterDevice, setBluetoothPrinterDevice] = useState<unknown>(null);
 
   const [storeInfo, setStoreInfo] = useState<StoreProfile>({
-    name: "360 Analyze POS",
-    details: "سرسید چوک، مدینہ مارکیٹ، راولپنڈی",
+    name: "",
+    details: "",
     phone: "",
+    tenantId: "",
   });
 
   const [todayDate, setTodayDate] = useState<string>(() => getTodayDateStr());
@@ -241,21 +282,29 @@ export default function InventoryPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  useEffect(() => {
-    if (!getToken()) {
-      window.location.href = "/login";
-      return;
-    }
+  function loadTenantLocalData(tenantKey: string): Record<string, number> {
+    const cleanKey = sanitizeTenantId(tenantKey) || "default";
+    activeTenantIdRef.current = cleanKey;
+    setActiveTenantId(cleanKey);
 
-    const savedPurchases = safeJsonRead<PurchaseEntry[]>(PURCHASE_LEDGER_KEY, []);
-    const savedSales = safeJsonRead<SaleEntry[]>(SALES_LEDGER_KEY, []);
-    const savedKhata = safeJsonRead<KhataEntry[]>(KHATA_LEDGER_KEY, []);
+    const savedPurchases = safeJsonRead<PurchaseEntry[]>(
+      buildTenantStorageKey(PURCHASE_LEDGER_BASE_KEY, cleanKey),
+      []
+    );
+    const savedSales = safeJsonRead<SaleEntry[]>(
+      buildTenantStorageKey(SALES_LEDGER_BASE_KEY, cleanKey),
+      []
+    );
+    const savedKhata = safeJsonRead<KhataEntry[]>(
+      buildTenantStorageKey(KHATA_LEDGER_BASE_KEY, cleanKey),
+      []
+    );
     const savedCustomers = safeJsonRead<CustomerKhataAccount[]>(
-      CUSTOMER_KHATA_BOOK_KEY,
+      buildTenantStorageKey(CUSTOMER_KHATA_BOOK_BASE_KEY, cleanKey),
       []
     ).filter((c) => c.id !== "CUST-SAMPLE-1");
     const savedCostMap = safeJsonRead<Record<string, number>>(
-      PRODUCT_COST_MAP_KEY,
+      buildTenantStorageKey(PRODUCT_COST_MAP_BASE_KEY, cleanKey),
       {}
     );
 
@@ -263,11 +312,109 @@ export default function InventoryPage() {
     setSalesEntries(savedSales);
     setKhataEntries(savedKhata);
     setCustomerAccounts(savedCustomers);
-    safeJsonWrite(CUSTOMER_KHATA_BOOK_KEY, savedCustomers);
+    safeJsonWrite(
+      buildTenantStorageKey(CUSTOMER_KHATA_BOOK_BASE_KEY, cleanKey),
+      savedCustomers
+    );
     setProductCostMap(savedCostMap);
     productCostMapRef.current = savedCostMap;
+    return savedCostMap;
+  }
 
-    void loadProducts(savedCostMap);
+  async function loadTenantAndStoreProfile() {
+    const tokenTenant = getTenantIdFromToken();
+    const initialMap = loadTenantLocalData(tokenTenant);
+    void loadProducts(initialMap);
+
+    const endpoints = ["/auth/me", "/stores/current", "/store/profile"];
+    for (const ep of endpoints) {
+      try {
+        const res = await apiFetch<Record<string, unknown>>(ep);
+        const rootObj =
+          res &&
+          typeof res === "object" &&
+          "data" in res &&
+          res.data &&
+          typeof res.data === "object"
+            ? (res.data as Record<string, unknown>)
+            : res;
+        if (!rootObj || typeof rootObj !== "object") continue;
+
+        const storeObj =
+          rootObj.store && typeof rootObj.store === "object"
+            ? (rootObj.store as Record<string, unknown>)
+            : rootObj.tenant && typeof rootObj.tenant === "object"
+            ? (rootObj.tenant as Record<string, unknown>)
+            : rootObj;
+
+        const resolvedTenant =
+          sanitizeTenantId(
+            storeObj.tenantId ??
+              storeObj.tenant_id ??
+              storeObj.id ??
+              rootObj.tenantId ??
+              rootObj.tenant_id ??
+              ""
+          ) || tokenTenant;
+
+        const resolvedName = String(
+          storeObj.name ??
+            storeObj.storeName ??
+            storeObj.businessName ??
+            rootObj.name ??
+            ""
+        ).trim();
+
+        const addressParts = [
+          storeObj.address ?? storeObj.location ?? "",
+          storeObj.city ?? "",
+        ]
+          .map((v) => String(v || "").trim())
+          .filter(Boolean);
+
+        const resolvedDetails = String(
+          storeObj.details ??
+            storeObj.description ??
+            (addressParts.length > 0 ? addressParts.join(", ") : "")
+        ).trim();
+
+        const resolvedPhone = String(
+          storeObj.phone ??
+            storeObj.mobile ??
+            storeObj.contactPhone ??
+            rootObj.phone ??
+            ""
+        ).trim();
+
+        if (resolvedTenant && resolvedTenant !== activeTenantIdRef.current) {
+          const switchedMap = loadTenantLocalData(resolvedTenant);
+          void loadProducts(switchedMap);
+        }
+
+        if (resolvedName || resolvedDetails || resolvedPhone || resolvedTenant) {
+          setStoreInfo({
+            name: resolvedName,
+            details: resolvedDetails,
+            phone: resolvedPhone,
+            tenantId: resolvedTenant,
+          });
+          return;
+        }
+      } catch {}
+    }
+
+    setStoreInfo((prev) => ({
+      ...prev,
+      tenantId: tokenTenant,
+    }));
+  }
+
+  useEffect(() => {
+    if (!getToken()) {
+      window.location.href = "/login";
+      return;
+    }
+    void loadTenantAndStoreProfile();
   }, []);
 
   useEffect(() => {
@@ -418,11 +565,15 @@ export default function InventoryPage() {
     unitCost: number
   ) {
     if (!Number.isFinite(unitCost) || unitCost < 0) return;
+    const storageKey = buildTenantStorageKey(
+      PRODUCT_COST_MAP_BASE_KEY,
+      activeTenantIdRef.current
+    );
     setProductCostMap((prev) => {
       const next = { ...prev };
       if (productId) next[`id:${productId}`] = unitCost;
       if (productSku) next[`sku:${productSku.toLowerCase()}`] = unitCost;
-      safeJsonWrite(PRODUCT_COST_MAP_KEY, next);
+      safeJsonWrite(storageKey, next);
       return next;
     });
   }
@@ -542,16 +693,24 @@ export default function InventoryPage() {
       ...entry,
       id: `PUR-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
     };
+    const storageKey = buildTenantStorageKey(
+      PURCHASE_LEDGER_BASE_KEY,
+      activeTenantIdRef.current
+    );
     setPurchaseEntries((prev) => {
       const next = [newRow, ...prev];
-      safeJsonWrite(PURCHASE_LEDGER_KEY, next);
+      safeJsonWrite(storageKey, next);
       return next;
     });
   }
 
   function saveCustomerAccounts(nextList: CustomerKhataAccount[]) {
+    const storageKey = buildTenantStorageKey(
+      CUSTOMER_KHATA_BOOK_BASE_KEY,
+      activeTenantIdRef.current
+    );
     setCustomerAccounts(nextList);
-    safeJsonWrite(CUSTOMER_KHATA_BOOK_KEY, nextList);
+    safeJsonWrite(storageKey, nextList);
   }
 
   function getInitials(fullName: string): string {
@@ -760,6 +919,7 @@ export default function InventoryPage() {
           const formData = new FormData();
           formData.append("image", blob, "wholesale-bill.jpg");
           formData.append("scan_type", "wholesale_purchase_bill");
+          formData.append("tenant_id", activeTenantIdRef.current);
           formData.append("token", getToken() ?? "");
 
           const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
@@ -1050,27 +1210,29 @@ export default function InventoryPage() {
       const idx = prev.findIndex(
         (p) => p.sku && p.sku.toLowerCase() === cleanSku.toLowerCase()
       );
-      let nextList: Product[];
       if (idx >= 0 && prev[idx]) {
         const current = prev[idx];
-        const updated: Product = {
-          ...current,
-          name: cleanName || current.name,
-          price: String(parsedSale),
-          stockQty: nextStockQty,
-        };
-        nextList = prev.map((item, i) => (i === idx ? updated : item));
-      } else {
-        const optimisticItem = {
+        return prev.map((item, i) =>
+          i === idx
+            ? {
+                ...current,
+                name: cleanName || current.name,
+                price: String(parsedSale),
+                stockQty: nextStockQty,
+              }
+            : item
+        );
+      }
+      return [
+        {
           id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
           name: cleanName,
           sku: cleanSku,
           price: String(parsedSale),
           stockQty: nextStockQty,
-        } as unknown as Product;
-        nextList = [optimisticItem, ...prev];
-      }
-      return nextList;
+        } as unknown as Product,
+        ...prev,
+      ];
     });
 
     setTodayDate(activeDate);
@@ -1104,9 +1266,7 @@ export default function InventoryPage() {
               !String(p.id).startsWith("LOCAL-") ||
               (p.sku || "").toLowerCase() !== cleanSku.toLowerCase()
           );
-          const exists = withoutLocal.findIndex(
-            (p) => p.id === createdProduct.id
-          );
+          const exists = withoutLocal.findIndex((p) => p.id === createdProduct.id);
           if (exists >= 0) {
             return withoutLocal.map((p) =>
               p.id === createdProduct.id ? createdProduct : p
@@ -1120,11 +1280,11 @@ export default function InventoryPage() {
     } catch (err) {
       return {
         saved: true,
-        backendError:
-          err instanceof Error ? err.message : "Server sync failed",
+        backendError: err instanceof Error ? err.message : "Server sync failed",
       };
     }
   }
+
   async function handleAddAllScannedBillItems() {
     if (scannedBillItems.length === 0 || savingStock) return;
     setSavingStock(true);
@@ -1340,7 +1500,7 @@ export default function InventoryPage() {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    const safeStoreName = storeInfo.name
+    const safeStoreName = (storeInfo.name || "store_inventory")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "_");
     link.setAttribute(
@@ -1435,15 +1595,24 @@ export default function InventoryPage() {
     >
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">{storeInfo.name}</h1>
-          <p className="text-sm font-medium text-slate-600">
-            {storeInfo.details}
-          </p>
+          <h1 className="text-2xl font-bold text-slate-900">
+            {storeInfo.name || "Store Inventory"}
+          </h1>
+          {storeInfo.details && (
+            <p className="text-sm font-medium text-slate-600">
+              {storeInfo.details}
+            </p>
+          )}
         </div>
-        <div className="flex items-center gap-2 text-sm text-slate-600">
+        <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
           {storeInfo.phone && (
             <span className="rounded bg-slate-100 px-3 py-1 font-medium text-slate-700">
               📞 {storeInfo.phone}
+            </span>
+          )}
+          {(storeInfo.tenantId || activeTenantId) && (
+            <span className="rounded bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+              Tenant: {storeInfo.tenantId || activeTenantId}
             </span>
           )}
           <span className="rounded bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
@@ -1839,7 +2008,9 @@ export default function InventoryPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => collectBarcodeEntry(sku || "TEST-SKU", selectedChannel)}
+                onClick={() =>
+                  collectBarcodeEntry(sku || "TEST-SKU", selectedChannel)
+                }
               >
                 Log Code
               </Button>
@@ -1869,7 +2040,9 @@ export default function InventoryPage() {
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <CardTitle>SALE BOX — Separate Sales Record ({salesEntries.length})</CardTitle>
+              <CardTitle>
+                SALE BOX — Separate Sales Record ({salesEntries.length})
+              </CardTitle>
               <p className="mt-1 text-xs text-slate-500">
                 سیل کا علیحدہ خانہ — اسٹاک اور خرید کے ساتھ مکس نہیں کیا گیا۔
               </p>
@@ -1886,7 +2059,9 @@ export default function InventoryPage() {
         </CardHeader>
         <CardContent>
           {salesEntries.length === 0 ? (
-            <p className="text-sm text-slate-500">ابھی کوئی سیل ریکارڈ درج نہیں ہے۔</p>
+            <p className="text-sm text-slate-500">
+              ابھی کوئی سیل ریکارڈ درج نہیں ہے۔
+            </p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
@@ -1961,7 +2136,9 @@ export default function InventoryPage() {
                     );
                     return (
                       <tr key={p.id} className="border-b border-slate-100">
-                        <td className="py-2 pr-4 font-mono text-xs">{p.sku || "-"}</td>
+                        <td className="py-2 pr-4 font-mono text-xs">
+                          {p.sku || "-"}
+                        </td>
                         <td className="py-2 pr-4 font-medium">{p.name}</td>
                         <td className="py-2 pr-4">{formatMoney(uCost)}</td>
                         <td className="py-2 pr-4">
