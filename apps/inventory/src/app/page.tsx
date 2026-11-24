@@ -193,6 +193,22 @@ export default function InventoryPage() {
 
   const [scanningPhoto, setScanningPhoto] = useState(false);
   const [scannedBillItems, setScannedBillItems] = useState<ScannedBillItem[]>([]);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState<{
+    name: string;
+    sku: string;
+    qty: string;
+    costPrice: string;
+    salePrice: string;
+    amount: string;
+  }>({
+    name: "",
+    sku: "",
+    qty: "1",
+    costPrice: "0",
+    salePrice: "0",
+    amount: "0",
+  });
 
   const [purchaseEntries, setPurchaseEntries] = useState<PurchaseEntry[]>([]);
   const [salesEntries, setSalesEntries] = useState<SaleEntry[]>([]);
@@ -204,10 +220,7 @@ export default function InventoryPage() {
     "purchase" | "sales" | "khata"
   >("purchase");
 
-  const [customerAccounts, setCustomerAccounts] = useState<CustomerKhataAccount[]>(
-    []
-  );
-
+  const [customerAccounts, setCustomerAccounts] = useState<CustomerKhataAccount[]>([]);
   const [khataSearch, setKhataSearch] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [khataModalMode, setKhataModalMode] = useState<
@@ -316,6 +329,67 @@ export default function InventoryPage() {
   useEffect(() => {
     todayDateRef.current = todayDate;
   }, [todayDate]);
+
+  function startEditScannedItem(index: number) {
+    const target = scannedBillItems[index];
+    if (!target) return;
+    setEditingIndex(index);
+    setEditDraft({
+      name: target.name,
+      sku: target.sku,
+      qty: String(target.qty),
+      costPrice: target.costPrice,
+      salePrice: target.salePrice,
+      amount: String(target.amount),
+    });
+  }
+
+  function applyScannedItemEdit() {
+    if (editingIndex === null) return;
+    const cleanName = editDraft.name.trim();
+    if (!cleanName) {
+      alert("آئٹم کا نام خالی نہیں ہو سکتا۔");
+      return;
+    }
+    const qNum = Math.max(1, parseInt(editDraft.qty, 10) || 1);
+    const rateNum = parseNumericValue(editDraft.costPrice, 0);
+    const rawAmtNum = parseNumericValue(editDraft.amount, 0);
+    const finalAmt =
+      rawAmtNum > 0
+        ? Math.round(rawAmtNum * 100) / 100
+        : Math.round(rateNum * qNum * 100) / 100;
+    const finalRate =
+      rateNum > 0
+        ? rateNum
+        : finalAmt > 0 && qNum > 0
+        ? Math.round((finalAmt / qNum) * 100) / 100
+        : 0;
+    const saleNum =
+      editDraft.salePrice.trim() !== ""
+        ? parseNumericValue(editDraft.salePrice, finalRate)
+        : finalRate;
+
+    const updatedList = scannedBillItems.map((row, idx) =>
+      idx === editingIndex
+        ? {
+            name: cleanName,
+            sku:
+              editDraft.sku.trim() ||
+              row.sku ||
+              `POS-${Math.floor(100000 + Math.random() * 900000)}`,
+            qty: qNum,
+            costPrice: String(finalRate),
+            salePrice: String(saleNum),
+            amount: finalAmt,
+          }
+        : row
+    );
+
+    setScannedBillItems(updatedList);
+    setScannedBillTotal(updatedList.reduce((acc, item) => acc + item.amount, 0));
+    setEditingIndex(null);
+    setError(`✔ آئٹم "${cleanName}" بائی ہینڈ اپ ڈیٹ ہو گئی ہے۔`);
+  }
 
   function saveCostMapping(
     productId: string | undefined,
@@ -852,6 +926,7 @@ export default function InventoryPage() {
 
     setScanningPhoto(true);
     setScannedBillTotal(null);
+    setEditingIndex(null);
     setError("📷 نیا اسٹاک / بل اسکین ہو رہا ہے، ٹریڈرز کا نام، آئٹمز اور ریٹ نکالے جا رہے ہیں...");
 
     canvas.toBlob(
@@ -916,7 +991,189 @@ export default function InventoryPage() {
             dataObj?.grand_total ??
             payload?.grand_total ??
             null;
-          async function saveWholesalePurchaseItem(params: {
+          const parsedBillTotal =
+            billTotalRaw !== null &&
+            billTotalRaw !== undefined &&
+            String(billTotalRaw).trim() !== ""
+              ? parseNumericValue(billTotalRaw, 0)
+              : null;
+
+          const rawItems = Array.isArray(dataObj?.items)
+            ? dataObj.items
+            : Array.isArray(dataObj?.bill_items)
+            ? dataObj.bill_items
+            : [];
+
+          if (rawItems.length > 0) {
+            const parsed: ScannedBillItem[] = rawItems
+              .map((rawIt: unknown, idx: number) => {
+                const it =
+                  rawIt && typeof rawIt === "object"
+                    ? (rawIt as Record<string, unknown>)
+                    : {};
+                const qtyNum = Math.max(
+                  1,
+                  parseInt(
+                    String(it?.qty ?? it?.quantity ?? it?.stockQty ?? "1"),
+                    10
+                  ) || 1
+                );
+
+                const rawCost =
+                  it?.cost_price ??
+                  it?.purchase_price ??
+                  it?.wholesale_price ??
+                  it?.rate ??
+                  it?.price;
+                const rawAmount = it?.amount ?? it?.line_total ?? it?.total;
+
+                let costNum = parseNumericValue(rawCost, 0);
+                let lineAmountNum = parseNumericValue(rawAmount, 0);
+
+                if (costNum <= 0 && lineAmountNum > 0 && qtyNum > 0) {
+                  costNum = Math.round((lineAmountNum / qtyNum) * 100) / 100;
+                }
+                if (lineAmountNum <= 0 && costNum > 0) {
+                  lineAmountNum = Math.round(costNum * qtyNum * 100) / 100;
+                }
+
+                const rawSale = it?.sale_price ?? it?.retail_price;
+                const saleNum =
+                  rawSale !== undefined && String(rawSale).trim() !== ""
+                    ? parseNumericValue(rawSale, costNum)
+                    : costNum;
+
+                return {
+                  name: String(
+                    it?.product_name ?? it?.item_name ?? it?.name ?? ""
+                  ).trim(),
+                  sku: String(
+                    it?.barcode ??
+                      it?.sku ??
+                      it?.code ??
+                      `POS-${Date.now().toString().slice(-5)}-${idx + 1}`
+                  ).trim(),
+                  costPrice: String(costNum),
+                  salePrice: String(saleNum),
+                  qty: qtyNum,
+                  amount: lineAmountNum,
+                };
+              })
+              .filter((r: ScannedBillItem) => r.name.length > 0);
+
+            if (parsed.length > 0) {
+              setScannedBillItems(parsed);
+              const computedSum = parsed.reduce((acc, r) => acc + r.amount, 0);
+              setScannedBillTotal(
+                parsedBillTotal && parsedBillTotal > 0
+                  ? parsedBillTotal
+                  : computedSum
+              );
+
+              const first = parsed[0];
+              if (first) {
+                setName(first.name);
+                setSku(first.sku);
+                setCostPrice(first.costPrice);
+                setSalePrice(first.salePrice);
+                setStockQty(String(first.qty));
+                collectBarcodeEntry(first.sku, "Barcode");
+              }
+              stopCamera();
+              setError(
+                `✔ نیا اسٹاک اسکین مکمل: ${
+                  traderName ? `بل/ٹریڈر: ${traderName} | ` : ""
+                }${parsed.length} آئٹمز ریٹ اور رقم کے ساتھ آ گئی ہیں۔`
+              );
+              return;
+            }
+          }
+
+          const extractedName = String(
+            dataObj?.product_name ?? dataObj?.item_name ?? dataObj?.name ?? ""
+          ).trim();
+          const extractedSku = String(
+            dataObj?.barcode ?? dataObj?.sku ?? dataObj?.code ?? ""
+          ).trim();
+          const singleQty = Math.max(
+            1,
+            parseInt(
+              String(
+                dataObj?.qty ??
+                  payload?.qty ??
+                  dataObj?.quantity ??
+                  dataObj?.stockQty ??
+                  "1"
+              ),
+              10
+            ) || 1
+          );
+          const rawSingleCost =
+            dataObj?.cost_price ??
+            payload?.cost_price ??
+            dataObj?.purchase_price ??
+            dataObj?.rate ??
+            dataObj?.price;
+          const rawSingleAmount =
+            dataObj?.amount ?? payload?.amount ?? parsedBillTotal;
+
+          let singleCost = parseNumericValue(rawSingleCost, 0);
+          let singleAmount = parseNumericValue(rawSingleAmount, 0);
+          if (singleCost <= 0 && singleAmount > 0 && singleQty > 0) {
+            singleCost = Math.round((singleAmount / singleQty) * 100) / 100;
+          }
+          if (singleAmount <= 0 && singleCost > 0) {
+            singleAmount = Math.round(singleCost * singleQty * 100) / 100;
+          }
+
+          const extractedSale =
+            dataObj?.sale_price ?? payload?.sale_price ?? singleCost;
+
+          if (extractedName) setName(extractedName);
+          if (extractedSku) {
+            setSku(extractedSku);
+            collectBarcodeEntry(extractedSku, "Barcode");
+          } else if (extractedName && !sku.trim()) {
+            const genSku = `POS-${Math.floor(100000 + Math.random() * 900000)}`;
+            setSku(genSku);
+            collectBarcodeEntry(genSku, "Barcode");
+          }
+          if (singleCost > 0) setCostPrice(String(singleCost));
+          setSalePrice(String(parseNumericValue(extractedSale, singleCost)));
+          setStockQty(String(singleQty));
+          if (singleAmount > 0) {
+            setScannedBillTotal(singleAmount);
+          }
+
+          stopCamera();
+          if (extractedName || extractedSku) {
+            setError(
+              `✔ اسکین مکمل: ${
+                traderName ? `${traderName} — ` : ""
+              }${extractedName || "آئٹم"} | کوڈ: ${extractedSku || "-"}`
+            );
+          } else {
+            setError(
+              "تصویر ویب ہک تک پہنچ گئی، لیکن نام واضح نہیں پڑھا جا سکا — آپ نام لکھ کر بھی آگے بڑھ سکتے ہیں۔"
+            );
+          }
+        } catch (err) {
+          console.error("Wholesale scan error:", err);
+          setError(
+            `❌ اسکین رسپانس میں خرابی (${
+              err instanceof Error ? err.message : "نامعلوم"
+            }) — آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
+          );
+        } finally {
+          setScanningPhoto(false);
+        }
+      },
+      "image/jpeg",
+      0.85
+    );
+  }
+
+  async function saveWholesalePurchaseItem(params: {
     itemName: string;
     itemSku: string;
     itemCostPrice: string;
@@ -1072,6 +1329,7 @@ export default function InventoryPage() {
 
       setScannedBillItems([]);
       setScannedBillTotal(null);
+      setEditingIndex(null);
       setActiveLedgerTab("purchase");
 
       if (failCount === 0) {
@@ -1150,7 +1408,6 @@ export default function InventoryPage() {
       setSavingStock(false);
     }
   }
-
   const handleCSVImport = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1609,25 +1866,112 @@ export default function InventoryPage() {
                       key={`${it.sku}-${idx}`}
                       className="rounded-md border border-emerald-200 bg-white p-2.5 text-xs text-slate-900 shadow-2xs"
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-slate-950">
-                          {idx + 1}. {it.name}
-                        </span>
-                        <span className="font-mono text-[11px] text-slate-500">
-                          {it.sku}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[11px] text-slate-700">
-                        <span>
-                          Qty: <strong>{it.qty}</strong>
-                        </span>
-                        <span>
-                          Rate: <strong>Rs {it.costPrice}</strong>
-                        </span>
-                        <span>
-                          Amount: <strong>{formatMoney(it.amount)}</strong>
-                        </span>
-                      </div>
+                      {editingIndex === idx ? (
+                        <div className="space-y-2">
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <Input
+                              value={editDraft.name}
+                              onChange={(e) =>
+                                setEditDraft((prev) => ({
+                                  ...prev,
+                                  name: e.target.value,
+                                }))
+                              }
+                              placeholder="Item Name"
+                            />
+                            <Input
+                              value={editDraft.sku}
+                              onChange={(e) =>
+                                setEditDraft((prev) => ({
+                                  ...prev,
+                                  sku: e.target.value,
+                                }))
+                              }
+                              placeholder="SKU"
+                            />
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-3">
+                            <Input
+                              type="number"
+                              value={editDraft.qty}
+                              onChange={(e) =>
+                                setEditDraft((prev) => ({
+                                  ...prev,
+                                  qty: e.target.value,
+                                }))
+                              }
+                              placeholder="Qty"
+                            />
+                            <Input
+                              type="number"
+                              step="any"
+                              value={editDraft.costPrice}
+                              onChange={(e) =>
+                                setEditDraft((prev) => ({
+                                  ...prev,
+                                  costPrice: e.target.value,
+                                }))
+                              }
+                              placeholder="Rate"
+                            />
+                            <Input
+                              type="number"
+                              step="any"
+                              value={editDraft.amount}
+                              onChange={(e) =>
+                                setEditDraft((prev) => ({
+                                  ...prev,
+                                  amount: e.target.value,
+                                }))
+                              }
+                              placeholder="Amount"
+                            />
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setEditingIndex(null)}
+                            >
+                              Cancel
+                            </Button>
+                            <Button type="button" onClick={applyScannedItemEdit}>
+                              Apply Edit
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-bold text-slate-950">
+                              {idx + 1}. {it.name}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-[11px] text-slate-500">
+                                {it.sku}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => startEditScannedItem(idx)}
+                                className="rounded border border-slate-300 bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-800 hover:bg-slate-100"
+                              >
+                                Edit
+                              </button>
+                            </div>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[11px] text-slate-700">
+                            <span>
+                              Qty: <strong>{it.qty}</strong>
+                            </span>
+                            <span>
+                              Rate: <strong>Rs {it.costPrice}</strong>
+                            </span>
+                            <span>
+                              Amount: <strong>{formatMoney(it.amount)}</strong>
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1694,3 +2038,649 @@ export default function InventoryPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mb-6 border-emerald-200">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle>SALE BOX — Separate Sales Record ({salesEntries.length})</CardTitle>
+              <p className="mt-1 text-xs text-slate-500">
+                سیل کا علیحدہ خانہ — اسٹاک اور خرید کے ساتھ مکس نہیں کیا گیا۔
+              </p>
+            </div>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="rounded bg-emerald-50 px-3 py-1 font-semibold text-emerald-800">
+                Today Sales: {formatMoney(todaySalesTotal)}
+              </span>
+              <span className="rounded bg-blue-50 px-3 py-1 font-semibold text-blue-800">
+                Today Profit: {formatMoney(todayNetProfit)}
+              </span>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {salesEntries.length === 0 ? (
+            <p className="text-sm text-slate-500">ابھی کوئی سیل ریکارڈ درج نہیں ہے۔</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Sale</th>
+                    <th className="py-2">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.billRef}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.totalSale)}</td>
+                      <td className="py-2 font-semibold text-emerald-700">
+                        {formatMoney(row.profit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>STOCK — Products ({filteredProducts.length})</CardTitle>
+            <Input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name or SKU..."
+              className="max-w-xs"
+            />
+          </div>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <p className="text-sm text-slate-500">Loading products...</p>
+          ) : filteredProducts.length === 0 ? (
+            <p className="text-sm text-slate-500">No products found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-4">SKU</th>
+                    <th className="py-2 pr-4">Name</th>
+                    <th className="py-2 pr-4">Cost</th>
+                    <th className="py-2 pr-4">Sale Price</th>
+                    <th className="py-2 pr-4">Stock</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredProducts.map((p) => {
+                    const uCost = lookupUnitCost(
+                      p.id,
+                      p.sku,
+                      parseFloat(p.price || "0") || 0
+                    );
+                    return (
+                      <tr key={p.id} className="border-b border-slate-100">
+                        <td className="py-2 pr-4 font-mono text-xs">{p.sku || "-"}</td>
+                        <td className="py-2 pr-4 font-medium">{p.name}</td>
+                        <td className="py-2 pr-4">{formatMoney(uCost)}</td>
+                        <td className="py-2 pr-4">
+                          {formatMoney(parseFloat(p.price || "0") || 0)}
+                        </td>
+                        <td className="py-2 pr-4">{p.stockQty}</td>
+                        <td className="py-2">
+                          <Badge
+                            variant={
+                              p.stockQty > 5
+                                ? "success"
+                                : p.stockQty > 0
+                                ? "warning"
+                                : "destructive"
+                            }
+                          >
+                            {p.stockQty > 5
+                              ? "In Stock"
+                              : p.stockQty > 0
+                              ? "Low Stock"
+                              : "Out of Stock"}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-bold tracking-wide uppercase text-slate-900">
+                SEPARATE DAILY LEDGERS ({todayDate})
+              </h2>
+              <span className="rounded border border-emerald-700/60 bg-emerald-900/70 px-2.5 py-1 text-xs font-semibold text-emerald-300">
+                {`Day Open (${todayDate}) • rolls over at 12:00 AM`}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant={activeLedgerTab === "purchase" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("purchase")}
+              >
+                STOCK Purchase ({purchaseEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "sales" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("sales")}
+              >
+                Sales ({salesEntries.length})
+              </Button>
+              <Button
+                type="button"
+                variant={activeLedgerTab === "khata" ? "default" : "outline"}
+                onClick={() => setActiveLedgerTab("khata")}
+              >
+                Khata / Hisab ({customerAccounts.length})
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {activeLedgerTab === "purchase" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Supplier / Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Rate</th>
+                    <th className="py-2">Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.supplierOrBill}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.costPrice)}</td>
+                      <td className="py-2 font-semibold">
+                        {formatMoney(row.totalPurchase)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "sales" && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date / Time</th>
+                    <th className="py-2 pr-3">Bill</th>
+                    <th className="py-2 pr-3">Item</th>
+                    <th className="py-2 pr-3">Qty</th>
+                    <th className="py-2 pr-3">Sale</th>
+                    <th className="py-2">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {salesEntries.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 text-xs">
+                        {row.date} {row.time}
+                      </td>
+                      <td className="py-2 pr-3">{row.billRef}</td>
+                      <td className="py-2 pr-3">{row.itemName}</td>
+                      <td className="py-2 pr-3">{row.qty}</td>
+                      <td className="py-2 pr-3">{formatMoney(row.totalSale)}</td>
+                      <td className="py-2 font-semibold text-emerald-700">
+                        {formatMoney(row.profit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {activeLedgerTab === "khata" && (() => {
+            const totalToCollect = customerAccounts.reduce(
+              (sum, c) => sum + (c.balance > 0 ? c.balance : 0),
+              0
+            );
+            const activeDebtors = customerAccounts.filter((c) => c.balance > 0);
+            const filteredCustomers = customerAccounts.filter((c) => {
+              const q = khataSearch.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                c.name.toLowerCase().includes(q) ||
+                c.phone.toLowerCase().includes(q) ||
+                c.address.toLowerCase().includes(q)
+              );
+            });
+            const activeCustomer =
+              customerAccounts.find((c) => c.id === selectedCustomerId) ||
+              activeDebtors[0] ||
+              filteredCustomers[0] ||
+              null;
+
+            const handleTopWhatsAppReminderClick = () => {
+              if (activeCustomer && activeCustomer.phone.trim()) {
+                openWhatsAppReminder(activeCustomer);
+                return;
+              }
+              setNewCustDate(getTodayDateStr());
+              setKhataModalMode("new_customer");
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-[#f7f5ee] p-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-medium text-slate-600">
+                        To collect (کل وصولی)
+                      </p>
+                      <p className="text-2xl font-bold text-slate-900">
+                        {formatMoney(totalToCollect)}
+                      </p>
+                    </div>
+                    <span className="mt-4 text-xs font-medium text-slate-600">
+                      from {activeDebtors.length} customers
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleTopWhatsAppReminderClick}
+                    className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-rose-200 bg-[#f9ecea] px-4 py-2.5 text-sm font-semibold text-rose-950 transition hover:bg-rose-100"
+                  >
+                    <span>💬</span>
+                    <span>
+                      {activeCustomer
+                        ? `Remind on WhatsApp (${activeCustomer.name})`
+                        : "Remind on WhatsApp"}
+                    </span>
+                  </button>
+
+                  <div className="mt-3">
+                    <Input
+                      value={khataSearch}
+                      onChange={(e) => setKhataSearch(e.target.value)}
+                      placeholder="Find customer (نام، موبائل یا ایڈریس تلاش کریں)..."
+                      className="bg-white"
+                    />
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    {filteredCustomers.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-slate-500">
+                        ابھی کوئی کسٹمر ایڈ نہیں ہے۔ اوپر &quot;Remind on WhatsApp&quot; یا نیچے &quot;+ Customer (نیا کھاتہ)&quot; سے کسٹمر شامل کریں۔
+                      </p>
+                    ) : (
+                      filteredCustomers.map((cust) => {
+                        const isSelected = activeCustomer?.id === cust.id;
+                        return (
+                          <div
+                            key={cust.id}
+                            onClick={() => setSelectedCustomerId(cust.id)}
+                            className={`flex cursor-pointer items-center justify-between rounded-lg border bg-white p-3 transition ${
+                              isSelected
+                                ? "border-emerald-600 ring-1 ring-emerald-600"
+                                : "border-slate-200 hover:border-slate-300"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-700">
+                                {getInitials(cust.name)}
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {cust.name}
+                                </p>
+                                <p className="text-xs text-slate-500">
+                                  {cust.phone || "No phone"}
+                                  {cust.address ? ` • ${cust.address}` : ""} • Last:{" "}
+                                  {cust.lastDate}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`text-sm font-bold ${
+                                  cust.balance > 0
+                                    ? "text-rose-700"
+                                    : "text-emerald-700"
+                                }`}
+                              >
+                                {formatMoney(cust.balance)}
+                              </span>
+                              <button
+                                type="button"
+                                title="Send WhatsApp Reminder"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedCustomerId(cust.id);
+                                  openWhatsAppReminder(cust);
+                                }}
+                                className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                              >
+                                💬
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("received");
+                      }}
+                    >
+                      Money received (وصولی)
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="bg-white font-semibold"
+                      onClick={() => {
+                        setTxCustomerId(activeCustomer?.id || "");
+                        setTxDate(getTodayDateStr());
+                        setKhataModalMode("udhaar");
+                      }}
+                    >
+                      + Udhaar / Bill (ادھار)
+                    </Button>
+                    <Button
+                      type="button"
+                      className="bg-emerald-800 text-white hover:bg-emerald-900"
+                      onClick={() => {
+                        setNewCustDate(getTodayDateStr());
+                        setKhataModalMode("new_customer");
+                      }}
+                    >
+                      + Customer (نیا کھاتہ)
+                    </Button>
+                  </div>
+                </div>
+
+                {khataModalMode === "new_customer" && (
+                  <form
+                    onSubmit={handleCreateCustomerKhata}
+                    className="space-y-3 rounded-lg border border-emerald-300 bg-emerald-50/60 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-emerald-950">
+                        نیا کسٹمر کھاتہ کھولیں (+ Customer)
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <Input
+                        value={newCustName}
+                        onChange={(e) => setNewCustName(e.target.value)}
+                        placeholder="کسٹمر کا نام *"
+                        required
+                      />
+                      <Input
+                        value={newCustPhone}
+                        onChange={(e) => setNewCustPhone(e.target.value)}
+                        placeholder="موبائل نمبر (0300...)"
+                      />
+                      <Input
+                        value={newCustAddress}
+                        onChange={(e) => setNewCustAddress(e.target.value)}
+                        placeholder="مکمل ایڈریس"
+                      />
+                      <Input
+                        type="number"
+                        step="any"
+                        value={newCustOpeningUdhaar}
+                        onChange={(e) => setNewCustOpeningUdhaar(e.target.value)}
+                        placeholder="ابتدائی ادھار (Rs)"
+                      />
+                      <Input
+                        type="date"
+                        value={newCustDate}
+                        onChange={(e) => setNewCustDate(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="submit">Save Customer Khata</Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="border-emerald-300 bg-white text-emerald-900"
+                        onClick={handleSaveAndSendWhatsApp}
+                      >
+                        💬 Save &amp; Send WhatsApp
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {(khataModalMode === "received" || khataModalMode === "udhaar") && (
+                  <form
+                    onSubmit={handleRecordCustomerTx}
+                    className="space-y-3 rounded-lg border border-slate-300 bg-slate-50 p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-slate-900">
+                        {khataModalMode === "received"
+                          ? "وصول شدہ رقم درج کریں (Money Received)"
+                          : "نیا ادھار / بل درج کریں (+ Udhaar)"}
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setKhataModalMode("none")}
+                        className="text-xs text-slate-600 hover:text-slate-900"
+                      >
+                        ✕ بند کریں
+                      </button>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                      <select
+                        value={txCustomerId || activeCustomer?.id || ""}
+                        onChange={(e) => setTxCustomerId(e.target.value)}
+                        className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                        required
+                      >
+                        {customerAccounts.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.phone || "No #"}) — Bal: {c.balance}
+                          </option>
+                        ))}
+                      </select>
+                      <Input
+                        type="number"
+                        step="any"
+                        value={txAmount}
+                        onChange={(e) => setTxAmount(e.target.value)}
+                        placeholder="رقم (Rs) *"
+                        required
+                      />
+                      <Input
+                        value={txNote}
+                        onChange={(e) => setTxNote(e.target.value)}
+                        placeholder="تفصیل (مثلاً کیش وصولی / بل #)"
+                      />
+                      <Input
+                        type="date"
+                        value={txDate}
+                        onChange={(e) => setTxDate(e.target.value)}
+                      />
+                      <Button type="submit">
+                        {khataModalMode === "received"
+                          ? "Save Received"
+                          : "Save Udhaar"}
+                      </Button>
+                    </div>
+                  </form>
+                )}
+
+                {activeCustomer && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">
+                          تاریخ وار کھاتہ تفصیل: {activeCustomer.name}
+                        </h4>
+                        <p className="text-xs text-slate-500">
+                          موبائل: {activeCustomer.phone || "-"} | ایڈریس:{" "}
+                          {activeCustomer.address || "-"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-slate-100 px-3 py-1 text-xs font-bold text-slate-900">
+                          بقایا بیلنس: {formatMoney(activeCustomer.balance)}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => openWhatsAppReminder(activeCustomer)}
+                        >
+                          💬 WhatsApp Reminder
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead>
+                          <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                            <th className="py-2 pr-3">Date / Time</th>
+                            <th className="py-2 pr-3">تفصیل (Note)</th>
+                            <th className="py-2 pr-3">ادھار (Given)</th>
+                            <th className="py-2 pr-3">وصول (Received)</th>
+                            <th className="py-2">بقایا (Balance)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {activeCustomer.transactions.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={5}
+                                className="py-3 text-center text-xs text-slate-500"
+                              >
+                                ابھی تک اس کسٹمر کا کوئی لین دین درج نہیں ہے۔
+                              </td>
+                            </tr>
+                          ) : (
+                            activeCustomer.transactions.map((tx) => (
+                              <tr key={tx.id} className="border-b border-slate-100">
+                                <td className="py-2 pr-3 text-xs">
+                                  {tx.date} {tx.time}
+                                </td>
+                                <td className="py-2 pr-3">{tx.note}</td>
+                                <td className="py-2 pr-3 text-rose-700">
+                                  {tx.type === "udhaar"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 pr-3 text-emerald-700">
+                                  {tx.type === "received"
+                                    ? formatMoney(tx.amount)
+                                    : "-"}
+                                </td>
+                                <td className="py-2 font-semibold">
+                                  {formatMoney(tx.balanceAfter)}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="mb-2 text-xs font-bold uppercase text-slate-600">
+              Daily Rollover Summary
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                    <th className="py-2 pr-3">Date</th>
+                    <th className="py-2 pr-3">Purchase</th>
+                    <th className="py-2 pr-3">Sales</th>
+                    <th className="py-2 pr-3">Profit</th>
+                    <th className="py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dateClosingSummary.map((day) => (
+                    <tr key={day.date} className="border-b border-slate-100">
+                      <td className="py-2 pr-3 font-medium">{day.date}</td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.pTotal)} ({day.pQty})
+                      </td>
+                      <td className="py-2 pr-3">
+                        {formatMoney(day.sTotal)} ({day.sQty})
+                      </td>
+                      <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
+                      <td className="py-2">
+                        <Badge variant={day.isClosed ? "default" : "success"}>
+                          {day.isClosed ? "Closed" : "Open"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </AppShell>
+  );
+}
