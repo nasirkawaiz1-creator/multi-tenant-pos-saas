@@ -27,6 +27,7 @@ const CUSTOMER_KHATA_BOOK_BASE_KEY = "pos:customerKhataBook:v1";
 const LAST_BILL_IMAGE_BASE_KEY = "pos:lastScannedBillImage:v1";
 const MIDNIGHT_ROLLOVER_INTERVAL_MS = 15000;
 const SALES_SYNC_POLL_MS = 4000;
+const DEFAULT_PAGE_SIZE = 10;
 
 type DeviceChannel = "USB" | "Bluetooth" | "Barcode" | "Keyboard";
 type KhataEntryType = "expense" | "khata" | "cash_in";
@@ -219,6 +220,19 @@ function parseNumericValue(raw: unknown, fallback: number = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function buildPageNumbers(currentPage: number, totalPages: number): number[] {
+  if (totalPages <= 1) return [1];
+  const pages: number[] = [];
+  const start = Math.max(1, currentPage - 2);
+  const end = Math.min(totalPages, currentPage + 2);
+  for (let i = start; i <= end; i++) {
+    pages.push(i);
+  }
+  if (!pages.includes(1)) pages.unshift(1);
+  if (!pages.includes(totalPages)) pages.push(totalPages);
+  return pages;
+}
+
 export default function InventoryPage() {
   const router = useRouter();
   const [products, setProducts] = useState<Product[]>([]);
@@ -228,6 +242,10 @@ export default function InventoryPage() {
   const [scanDiagnostic, setScanDiagnostic] = useState("");
   const [savedBillImage, setSavedBillImage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  const [salePage, setSalePage] = useState<number>(1);
+  const [stockPage, setStockPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   const [activeTenantId, setActiveTenantId] = useState<string>(() =>
     getTenantIdFromToken()
@@ -315,6 +333,20 @@ export default function InventoryPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
+  function isCheckoutOrSaleProductItem(
+    p: Product,
+    costMapArg: Record<string, number> = productCostMapRef.current
+  ): boolean {
+    const qtyNum = Number(p.stockQty ?? 0);
+    const hasExplicitCost =
+      (p.id && costMapArg[`id:${p.id}`] !== undefined) ||
+      (p.sku && costMapArg[`sku:${String(p.sku).toLowerCase()}`] !== undefined);
+    if (!hasExplicitCost && (qtyNum >= 9900 || String(p.id || "").startsWith("CHK-"))) {
+      return true;
+    }
+    return false;
+  }
 
   function persistBillImageDataUrl(dataUrl: string) {
     if (!dataUrl) return;
@@ -410,7 +442,10 @@ export default function InventoryPage() {
               ("itemName" in obj || "productName" in obj)
             ) {
               const sPrice = parseNumericValue(obj.salePrice ?? obj.unitPrice, 0);
-              const qNum = Math.max(1, parseInt(String(obj.qty ?? obj.quantity ?? "1"), 10) || 1);
+              const qNum = Math.max(
+                1,
+                parseInt(String(obj.qty ?? obj.quantity ?? "1"), 10) || 1
+              );
               const tSale = parseNumericValue(obj.totalSale, sPrice * qNum);
               const uCost = parseNumericValue(
                 obj.costPrice,
@@ -436,8 +471,12 @@ export default function InventoryPage() {
                 ),
                 date: dateVal,
                 time: String(obj.time || formatTimeStr(new Date())),
-                billRef: String(obj.billRef || obj.billNo || obj.orderId || "Checkout Scan"),
-                itemName: String(obj.itemName || obj.productName || obj.name || "Sold Item"),
+                billRef: String(
+                  obj.billRef || obj.billNo || obj.orderId || "Checkout Scan"
+                ),
+                itemName: String(
+                  obj.itemName || obj.productName || obj.name || "Sold Item"
+                ),
                 qty: qNum,
                 costPrice: uCost,
                 salePrice: sPrice,
@@ -465,13 +504,18 @@ export default function InventoryPage() {
 
               if (Array.isArray(ord.items) && ord.items.length > 0) {
                 ord.items.forEach((it, idx) => {
-                  const qty = Math.max(1, parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1);
+                  const qty = Math.max(
+                    1,
+                    parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1
+                  );
                   const uPrice = parseNumericValue(it.unitPrice ?? it.price, 0);
                   const pName = String(it.productName ?? it.name ?? "Scanned Item");
                   const matchedProd = prodList.find(
                     (p) =>
                       p.id === it.productId ||
-                      (it.sku && p.sku && p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
+                      (it.sku &&
+                        p.sku &&
+                        p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
                       p.name.toLowerCase() === pName.toLowerCase()
                   );
                   const uCost = lookupUnitCost(
@@ -820,6 +864,14 @@ export default function InventoryPage() {
   useEffect(() => {
     todayDateRef.current = todayDate;
   }, [todayDate]);
+
+  useEffect(() => {
+    setSalePage(1);
+  }, [saleFilterDate, dailySaleEntries.length, pageSize]);
+
+  useEffect(() => {
+    setStockPage(1);
+  }, [searchQuery, products.length, pageSize]);
 
   async function loadProducts(costMapArg: Record<string, number> = productCostMap) {
     setLoading(true);
@@ -1172,7 +1224,6 @@ export default function InventoryPage() {
     setCustomerAccounts(nextList);
     safeJsonWrite(storageKey, nextList);
   }
-
   function getInitials(fullName: string): string {
     const parts = fullName.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0) return "CU";
@@ -2011,7 +2062,7 @@ export default function InventoryPage() {
       "Total Cost (Rs)",
       "Status",
     ];
-    const rows = products.map((p) => {
+    const rows = filteredProducts.map((p) => {
       const uCost = lookupUnitCost(
         p.id,
         p.sku,
@@ -2051,11 +2102,24 @@ export default function InventoryPage() {
   }
 
   const filteredProducts = products.filter((p) => {
+    if (isCheckoutOrSaleProductItem(p)) return false;
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (p.sku && p.sku.toLowerCase().includes(searchQuery.toLowerCase()));
     return matchesSearch;
   });
+
+  const totalStockPages = Math.max(
+    1,
+    Math.ceil(filteredProducts.length / pageSize)
+  );
+  const safeStockPage = Math.min(Math.max(1, stockPage), totalStockPages);
+  const stockStartIdx = (safeStockPage - 1) * pageSize;
+  const paginatedStockProducts = filteredProducts.slice(
+    stockStartIdx,
+    stockStartIdx + pageSize
+  );
+  const stockPageNumbers = buildPageNumbers(safeStockPage, totalStockPages);
 
   const totalStockValue = filteredProducts.reduce((sum, p) => {
     const uCost = lookupUnitCost(p.id, p.sku, parseFloat(p.price || "0") || 0);
@@ -2074,6 +2138,18 @@ export default function InventoryPage() {
   const filteredDailySales = dailySaleEntries.filter((e) =>
     saleFilterDate ? e.date === saleFilterDate : true
   );
+  const totalSalePages = Math.max(
+    1,
+    Math.ceil(filteredDailySales.length / pageSize)
+  );
+  const safeSalePage = Math.min(Math.max(1, salePage), totalSalePages);
+  const saleStartIdx = (safeSalePage - 1) * pageSize;
+  const paginatedDailySales = filteredDailySales.slice(
+    saleStartIdx,
+    saleStartIdx + pageSize
+  );
+  const salePageNumbers = buildPageNumbers(safeSalePage, totalSalePages);
+
   const filteredDailySaleTotal = filteredDailySales.reduce(
     (s, e) => s + e.totalSale,
     0
@@ -2179,10 +2255,21 @@ export default function InventoryPage() {
       </div>
 
       <PageHeader
-        title="STOCK — Inventory & Wholesale Purchase"
-        description="اوپر سے آنے والے نئے اسٹاک (STOCK) کی انٹری، بل اسکین، اور چیک آؤٹ/بارکوڈ اسکین سے آنے والی ڈیلی سیل کا علیحدہ خانہ۔"
+        title="DAILY SALE & STOCK — Inventory Management"
+        description="چیک آؤٹ سے آنے والی سیل DAILY SALE کے نیچے اور نئے اسٹاک کی تفصیل STOCK کے نیچے — دونوں میں Page 1, 2, 3 پیجینیشن کے ساتھ۔"
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value) || DEFAULT_PAGE_SIZE)}
+              className="rounded-md border border-slate-300 bg-white px-2.5 py-2 text-xs font-medium text-slate-700"
+              title="Items per page"
+            >
+              <option value={5}>5 / page</option>
+              <option value={10}>10 / page</option>
+              <option value={20}>20 / page</option>
+              <option value={50}>50 / page</option>
+            </select>
             <Button
               type="button"
               variant="outline"
@@ -2275,16 +2362,16 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      {/* ڈیلی سیل کا علیحدہ خانہ (چیک آؤٹ / بارکوڈ اسکین سے خود بخود آنے والی سیل) */}
+      {/* DAILY SALE خانہ اور اس کے بالکل نیچے روزانہ سیل کی تفصیل + Page 1, 2, 3 */}
       <Card className="mb-6 border-emerald-300 bg-emerald-50/30">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <CardTitle>
-                DAILY SALE — علیحدہ سیل خانہ ({filteredDailySales.length})
+                DAILY SALE ({filteredDailySales.length})
               </CardTitle>
               <p className="mt-1 text-xs text-slate-600">
-                چیک آؤٹ سے بارکوڈ/QR اسکین کر کے بننے والے بل خود بخود یہاں آتے ہیں — آج کتنی سیل ہوئی اور کتنی آئٹمز بکیں۔
+                چیک آؤٹ سے بننے والے بل اور بیچی گئی آئٹمز کی روزانہ تفصیل DAILY SALE کے نیچے آتی ہے — STOCK میں نہیں جاتی۔
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -2292,8 +2379,7 @@ export default function InventoryPage() {
                 Today Sale ({todayDate}): {formatMoney(todaySalesTotal)} ({todaySoldQty} items)
               </span>
               <span className="rounded bg-blue-100 px-3 py-1 font-semibold text-blue-900">
-                Selected Date ({saleFilterDate || "All"}):{" "}
-                {formatMoney(filteredDailySaleTotal)} ({filteredDailySaleQty} items)
+                Selected ({saleFilterDate || "All"}): {formatMoney(filteredDailySaleTotal)} ({filteredDailySaleQty} items)
               </span>
             </div>
           </div>
@@ -2338,10 +2424,7 @@ export default function InventoryPage() {
               >
                 ↻ Sync Checkout Sales
               </Button>
-              <Button
-                type="button"
-                onClick={() => router.push("/checkout")}
-              >
+              <Button type="button" onClick={() => router.push("/checkout")}>
                 Scan &amp; Bill at Checkout
               </Button>
             </div>
@@ -2349,46 +2432,88 @@ export default function InventoryPage() {
 
           {filteredDailySales.length === 0 ? (
             <p className="text-sm text-slate-500">
-              اس تاریخ ({saleFilterDate || "تمام"}) کے لیے ابھی کوئی سیل ریکارڈ نہیں آیا۔ چیک آؤٹ سے بارکوڈ/QR اسکین کر کے بل بنائیں تو یہاں خود بخود آ جائے گا۔
+              اس تاریخ ({saleFilterDate || "تمام"}) کے لیے ابھی کوئی سیل ریکارڈ نہیں آیا۔ چیک آؤٹ سے بل بنائیں تو تفصیل یہاں DAILY SALE کے نیچے آ جائے گی۔
             </p>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                    <th className="py-2 pr-3 pl-3">Date / Time</th>
-                    <th className="py-2 pr-3">Bill / Ref</th>
-                    <th className="py-2 pr-3">Item</th>
-                    <th className="py-2 pr-3">Qty</th>
-                    <th className="py-2 pr-3">Rate</th>
-                    <th className="py-2 pr-3">Total Sale</th>
-                    <th className="py-2 pr-3">Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredDailySales.map((row) => (
-                    <tr key={row.id} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 pl-3 text-xs">
-                        {row.date} {row.time}
-                      </td>
-                      <td className="py-2 pr-3">{row.billRef}</td>
-                      <td className="py-2 pr-3 font-medium">{row.itemName}</td>
-                      <td className="py-2 pr-3">{row.qty}</td>
-                      <td className="py-2 pr-3">{formatMoney(row.salePrice)}</td>
-                      <td className="py-2 pr-3 font-semibold text-emerald-800">
-                        {formatMoney(row.totalSale)}
-                      </td>
-                      <td className="py-2 pr-3 font-semibold text-blue-700">
-                        {formatMoney(row.profit)}
-                      </td>
+            <>
+              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                      <th className="py-2 pr-3 pl-3">Date / Time</th>
+                      <th className="py-2 pr-3">Bill / Ref</th>
+                      <th className="py-2 pr-3">Item</th>
+                      <th className="py-2 pr-3">Qty</th>
+                      <th className="py-2 pr-3">Rate</th>
+                      <th className="py-2 pr-3">Total Sale</th>
+                      <th className="py-2 pr-3">Profit</th>
                     </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedDailySales.map((row) => (
+                      <tr key={row.id} className="border-b border-slate-100">
+                        <td className="py-2 pr-3 pl-3 text-xs">
+                          {row.date} {row.time}
+                        </td>
+                        <td className="py-2 pr-3">{row.billRef}</td>
+                        <td className="py-2 pr-3 font-medium">{row.itemName}</td>
+                        <td className="py-2 pr-3">{row.qty}</td>
+                        <td className="py-2 pr-3">{formatMoney(row.salePrice)}</td>
+                        <td className="py-2 pr-3 font-semibold text-emerald-800">
+                          {formatMoney(row.totalSale)}
+                        </td>
+                        <td className="py-2 pr-3 font-semibold text-blue-700">
+                          {formatMoney(row.profit)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-slate-600">
+                <span>
+                  Page {safeSalePage} of {totalSalePages} • Showing{" "}
+                  {saleStartIdx + 1}–
+                  {Math.min(saleStartIdx + pageSize, filteredDailySales.length)} of{" "}
+                  {filteredDailySales.length}
+                </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={safeSalePage <= 1}
+                    onClick={() => setSalePage((p) => Math.max(1, p - 1))}
+                  >
+                    Prev
+                  </Button>
+                  {salePageNumbers.map((pg) => (
+                    <Button
+                      key={`sale-pg-${pg}`}
+                      type="button"
+                      variant={pg === safeSalePage ? "default" : "outline"}
+                      onClick={() => setSalePage(pg)}
+                    >
+                      {pg}
+                    </Button>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={safeSalePage >= totalSalePages}
+                    onClick={() =>
+                      setSalePage((p) => Math.min(totalSalePages, p + 1))
+                    }
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
+
       <div className="mb-6 grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -2733,16 +2858,16 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      {/* اسٹاک کا علیحدہ خانہ (STOCK BOX) */}
+      {/* STOCK خانہ اور اس کے بالکل نیچے اسٹاک کی تفصیل + Page 1, 2, 3 */}
       <Card className="mb-6">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <CardTitle>
-                STOCK — علیحدہ اسٹاک خانہ ({filteredProducts.length})
+                STOCK ({filteredProducts.length})
               </CardTitle>
               <p className="mt-1 text-xs text-slate-500">
-                اگر کوئی پرانی QR/چیک آؤٹ سیل آئٹم یہاں دکھ رہی ہو تو &quot;→ Sale&quot; دبا کر اسے DAILY SALE میں بھیج دیں[cite: 2]۔
+                یہاں صرف STOCK کی انٹری/تفصیل آتی ہے — سیل آئٹمز STOCK میں نہیں جاتیں۔ اگر کوئی پرانی سیل آئٹم یہاں دکھ رہی ہو تو &quot;→ Sale&quot; دبا کر DAILY SALE میں بھیج دیں[cite: 2]۔
               </p>
               <p className="mt-1 text-xs font-medium text-slate-600">
                 Total Stock Value: <strong>{formatMoney(totalStockValue)}</strong>
@@ -2756,81 +2881,122 @@ export default function InventoryPage() {
             />
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           {loading ? (
             <p className="text-sm text-slate-500">Loading items...</p>
           ) : filteredProducts.length === 0 ? (
             <p className="text-sm text-slate-500">No items found.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                    <th className="py-2 pr-4">SKU</th>
-                    <th className="py-2 pr-4">Item</th>
-                    <th className="py-2 pr-4">Cost</th>
-                    <th className="py-2 pr-4">Sale Price</th>
-                    <th className="py-2 pr-4">Stock</th>
-                    <th className="py-2 pr-4">Total</th>
-                    <th className="py-2 pr-4">Status</th>
-                    <th className="py-2">Sale Move</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredProducts.map((p) => {
-                    const uCost = lookupUnitCost(
-                      p.id,
-                      p.sku,
-                      parseFloat(p.price || "0") || 0
-                    );
-                    const rowTotal =
-                      Math.round(uCost * Number(p.stockQty || 0) * 100) / 100;
-                    return (
-                      <tr key={p.id} className="border-b border-slate-100">
-                        <td className="py-2 pr-4 font-mono text-xs">
-                          {p.sku || "-"}
-                        </td>
-                        <td className="py-2 pr-4 font-medium">{p.name}</td>
-                        <td className="py-2 pr-4">{formatMoney(uCost)}</td>
-                        <td className="py-2 pr-4">
-                          {formatMoney(parseFloat(p.price || "0") || 0)}
-                        </td>
-                        <td className="py-2 pr-4">{p.stockQty}</td>
-                        <td className="py-2 pr-4 font-semibold">
-                          {formatMoney(rowTotal)}
-                        </td>
-                        <td className="py-2 pr-4">
-                          <Badge
-                            variant={
-                              p.stockQty > 5
-                                ? "success"
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                      <th className="py-2 pr-4">SKU</th>
+                      <th className="py-2 pr-4">Item</th>
+                      <th className="py-2 pr-4">Cost</th>
+                      <th className="py-2 pr-4">Sale Price</th>
+                      <th className="py-2 pr-4">Stock</th>
+                      <th className="py-2 pr-4">Total</th>
+                      <th className="py-2 pr-4">Status</th>
+                      <th className="py-2">Sale Move</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedStockProducts.map((p) => {
+                      const uCost = lookupUnitCost(
+                        p.id,
+                        p.sku,
+                        parseFloat(p.price || "0") || 0
+                      );
+                      const rowTotal =
+                        Math.round(uCost * Number(p.stockQty || 0) * 100) / 100;
+                      return (
+                        <tr key={p.id} className="border-b border-slate-100">
+                          <td className="py-2 pr-4 font-mono text-xs">
+                            {p.sku || "-"}
+                          </td>
+                          <td className="py-2 pr-4 font-medium">{p.name}</td>
+                          <td className="py-2 pr-4">{formatMoney(uCost)}</td>
+                          <td className="py-2 pr-4">
+                            {formatMoney(parseFloat(p.price || "0") || 0)}
+                          </td>
+                          <td className="py-2 pr-4">{p.stockQty}</td>
+                          <td className="py-2 pr-4 font-semibold">
+                            {formatMoney(rowTotal)}
+                          </td>
+                          <td className="py-2 pr-4">
+                            <Badge
+                              variant={
+                                p.stockQty > 5
+                                  ? "success"
+                                  : p.stockQty > 0
+                                  ? "warning"
+                                  : "destructive"
+                              }
+                            >
+                              {p.stockQty > 5
+                                ? "In Stock"
                                 : p.stockQty > 0
-                                ? "warning"
-                                : "destructive"
-                            }
-                          >
-                            {p.stockQty > 5
-                              ? "In Stock"
-                              : p.stockQty > 0
-                              ? "Low Stock"
-                              : "Out of Stock"}
-                          </Badge>
-                        </td>
-                        <td className="py-2">
-                          <button
-                            type="button"
-                            onClick={() => moveStockItemToDailySale(p)}
-                            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-100"
-                          >
-                            → Sale
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                                ? "Low Stock"
+                                : "Out of Stock"}
+                            </Badge>
+                          </td>
+                          <td className="py-2">
+                            <button
+                              type="button"
+                              onClick={() => moveStockItemToDailySale(p)}
+                              className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-100"
+                            >
+                              → Sale
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-xs text-slate-600">
+                <span>
+                  Page {safeStockPage} of {totalStockPages} • Showing{" "}
+                  {stockStartIdx + 1}–
+                  {Math.min(stockStartIdx + pageSize, filteredProducts.length)} of{" "}
+                  {filteredProducts.length}
+                </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={safeStockPage <= 1}
+                    onClick={() => setStockPage((p) => Math.max(1, p - 1))}
+                  >
+                    Prev
+                  </Button>
+                  {stockPageNumbers.map((pg) => (
+                    <Button
+                      key={`stock-pg-${pg}`}
+                      type="button"
+                      variant={pg === safeStockPage ? "default" : "outline"}
+                      onClick={() => setStockPage(pg)}
+                    >
+                      {pg}
+                    </Button>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={safeStockPage >= totalStockPages}
+                    onClick={() =>
+                      setStockPage((p) => Math.min(totalStockPages, p + 1))
+                    }
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
