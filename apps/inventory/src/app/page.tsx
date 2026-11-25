@@ -482,7 +482,6 @@ export default function InventoryPage() {
         if (!raw) continue;
         const parsed = JSON.parse(raw) as unknown;
 
-        // اگر کی کا نام واضح طور پر کسی اور ٹیننٹ کے لیے ہے تو اس کو اسکیپ کریں
         if (
           !isTenantScopedKey &&
           parsed &&
@@ -508,7 +507,6 @@ export default function InventoryPage() {
           if (!item || typeof item !== "object") continue;
           if (!belongsToActiveTenant(item, cleanTenant)) continue;
 
-          // اگر کی ٹیننٹ اسکوپڈ نہیں ہے اور آئٹم میں کوئی tenantId/storeId موجود نہیں ہے تو اسے مکس نہ کریں
           const explicitItemTenant = extractRecordTenantId(item);
           if (!isTenantScopedKey && !explicitItemTenant) {
             continue;
@@ -764,7 +762,6 @@ export default function InventoryPage() {
     activeTenantIdRef.current = cleanKey;
     setActiveTenantId(cleanKey);
 
-    // ٹیننٹ تبدیل ہونے پر پچھلی دکان کا ڈیٹا فوراً صاف کریں تاکہ مکس نہ ہو
     if (tenantChanged) {
       setProducts([]);
       productsRef.current = [];
@@ -1009,7 +1006,6 @@ export default function InventoryPage() {
         ? res.data
         : [];
 
-      // سخت فلٹر: صرف اسی دکان کی پروڈکٹس رکھیں جو activeTenantKey سے میل کھاتی ہوں
       const tenantProducts = rawList.filter((p) =>
         belongsToActiveTenant(p, cleanTenant)
       );
@@ -1691,7 +1687,7 @@ export default function InventoryPage() {
 
                 const lineAmountNum =
                   costNum > 0
-                    ? Math.round(costNum * qNum * 100) / 100
+                    ? Math.round(costNum * qtyNum * 100) / 100
                     : Math.round(rawAmountNum * 100) / 100;
 
                 const rawSale = it?.sale_price ?? it?.retail_price;
