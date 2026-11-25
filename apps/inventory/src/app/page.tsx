@@ -50,6 +50,7 @@ interface PurchaseEntry {
   costPrice: number;
   salePrice: number;
   totalPurchase: number;
+  tenantId?: string;
 }
 
 interface SaleEntry {
@@ -64,6 +65,7 @@ interface SaleEntry {
   totalSale: number;
   totalCost: number;
   profit: number;
+  tenantId?: string;
 }
 
 interface BackendOrderItem {
@@ -76,6 +78,10 @@ interface BackendOrderItem {
   qty?: number;
   unitPrice?: number | string;
   price?: number | string;
+  tenantId?: string | number;
+  tenant_id?: string | number;
+  storeId?: string | number;
+  store_id?: string | number;
 }
 
 interface BackendOrder {
@@ -88,6 +94,10 @@ interface BackendOrder {
   total?: number | string;
   subtotal?: number | string;
   items?: BackendOrderItem[];
+  tenantId?: string | number;
+  tenant_id?: string | number;
+  storeId?: string | number;
+  store_id?: string | number;
 }
 
 interface KhataEntry {
@@ -139,6 +149,36 @@ interface CollectedCodeEntry {
 function sanitizeTenantId(raw: unknown): string {
   if (raw === null || raw === undefined) return "";
   return String(raw).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function extractRecordTenantId(obj: unknown): string {
+  if (!obj || typeof obj !== "object") return "";
+  const rec = obj as Record<string, unknown>;
+  const raw =
+    rec.tenantId ??
+    rec.tenant_id ??
+    rec.storeId ??
+    rec.store_id ??
+    (rec.store && typeof rec.store === "object"
+      ? (rec.store as Record<string, unknown>).id ??
+        (rec.store as Record<string, unknown>).tenantId ??
+        (rec.store as Record<string, unknown>).storeId
+      : undefined) ??
+    "";
+  return sanitizeTenantId(raw);
+}
+
+/**
+ * سخت قانون: اگر ریکارڈ میں کوئی دکان/ٹیننٹ آئی ڈی موجود ہے تو وہ
+ * موجودہ دکان (activeTenantKey) کے عین مطابق ہونی چاہیے۔
+ * اگر مختلف ہو تو فوراً false لوٹائے گا تاکہ دوسری دکان کا ڈیٹا مکس نہ ہو۔
+ */
+function belongsToActiveTenant(obj: unknown, activeTenantKey: string): boolean {
+  const cleanActive = sanitizeTenantId(activeTenantKey);
+  if (!cleanActive) return true;
+  const recordTenant = extractRecordTenantId(obj);
+  if (!recordTenant) return true;
+  return recordTenant.toLowerCase() === cleanActive.toLowerCase();
 }
 
 function getTenantIdFromToken(): string {
@@ -366,181 +406,225 @@ export default function InventoryPage() {
     incomingRows: SaleEntry[],
     existingRows: SaleEntry[]
   ): SaleEntry[] {
+    const cleanTenant = sanitizeTenantId(tenantKey) || "default";
     const map = new Map<string, SaleEntry>();
     for (const r of [...incomingRows, ...existingRows]) {
+      if (!r || !belongsToActiveTenant(r, cleanTenant)) continue;
       const key =
         r.id ||
-        `${r.date}|${r.time}|${r.billRef}|${r.itemName}|${r.qty}|${r.totalSale}`;
+        `${cleanTenant}|${r.date}|${r.time}|${r.billRef}|${r.itemName}|${r.qty}|${r.totalSale}`;
       if (!map.has(key)) {
-        map.set(key, r);
+        map.set(key, { ...r, tenantId: cleanTenant });
       }
     }
     const merged = Array.from(map.values()).sort((a, b) => {
       if (a.date !== b.date) return b.date.localeCompare(a.date);
       return b.time.localeCompare(a.time);
     });
-    safeJsonWrite(buildTenantStorageKey(SALES_LEDGER_BASE_KEY, tenantKey), merged);
+    safeJsonWrite(
+      buildTenantStorageKey(SALES_LEDGER_BASE_KEY, cleanTenant),
+      merged
+    );
     return merged;
   }
 
+  /**
+   * صرف موجودہ دکان (tenantKey) کے لیے لوکل اسٹوریج سے سیلز نکالے گا۔
+   * دوسری دکانوں کے ریکارڈز یا غیر متعلقہ کیز کو بالکل شامل نہیں کرے گا۔
+   */
   function extractCheckoutSalesFromLocalStorage(
     tenantKey: string,
     costMapArg: Record<string, number>,
     prodList: Product[]
   ): SaleEntry[] {
     if (typeof window === "undefined") return [];
+    const cleanTenant = sanitizeTenantId(tenantKey) || "default";
+    const tenantSuffix = `:${cleanTenant.toLowerCase()}`;
     const foundRows: SaleEntry[] = [];
     const seenKeys = new Set<string>();
 
     const pushSaleRow = (row: SaleEntry) => {
-      const dedupe = `${row.date}|${row.billRef}|${row.itemName}|${row.qty}|${row.totalSale}`;
+      if (!belongsToActiveTenant(row, cleanTenant)) return;
+      const dedupe = `${cleanTenant}|${row.date}|${row.billRef}|${row.itemName}|${row.qty}|${row.totalSale}`;
       if (seenKeys.has(dedupe)) return;
       seenKeys.add(dedupe);
-      foundRows.push(row);
+      foundRows.push({ ...row, tenantId: cleanTenant });
     };
 
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (!k) continue;
-        const lower = k.toLowerCase();
+        const lowerKey = k.toLowerCase();
+
         if (
-          k.startsWith(SALES_LEDGER_BASE_KEY) ||
-          lower.includes("checkout") ||
-          lower.includes("order") ||
-          lower.includes("receipt") ||
-          lower.includes("sale")
+          k.startsWith(PURCHASE_LEDGER_BASE_KEY) ||
+          k.startsWith(KHATA_LEDGER_BASE_KEY) ||
+          k.startsWith(CUSTOMER_KHATA_BOOK_BASE_KEY) ||
+          k.startsWith(PRODUCT_COST_MAP_BASE_KEY) ||
+          k.startsWith(LAST_BILL_IMAGE_BASE_KEY)
         ) {
-          if (
-            k.startsWith(PURCHASE_LEDGER_BASE_KEY) ||
-            k.startsWith(KHATA_LEDGER_BASE_KEY) ||
-            k.startsWith(CUSTOMER_KHATA_BOOK_BASE_KEY) ||
-            k.startsWith(PRODUCT_COST_MAP_BASE_KEY)
-          ) {
+          continue;
+        }
+
+        const isTenantScopedKey =
+          lowerKey.endsWith(tenantSuffix) || lowerKey.includes(`${tenantSuffix}:`);
+        const isCheckoutOrSaleKey =
+          k.startsWith(SALES_LEDGER_BASE_KEY) ||
+          lowerKey.includes("checkout") ||
+          lowerKey.includes("order") ||
+          lowerKey.includes("receipt") ||
+          lowerKey.includes("sale");
+
+        if (!isCheckoutOrSaleKey) continue;
+
+        const raw = localStorage.getItem(k);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw) as unknown;
+
+        // اگر کی کا نام واضح طور پر کسی اور ٹیننٹ کے لیے ہے تو اس کو اسکیپ کریں
+        if (
+          !isTenantScopedKey &&
+          parsed &&
+          typeof parsed === "object" &&
+          !belongsToActiveTenant(parsed, cleanTenant)
+        ) {
+          continue;
+        }
+
+        const arr = Array.isArray(parsed)
+          ? parsed
+          : parsed &&
+            typeof parsed === "object" &&
+            Array.isArray((parsed as { orders?: unknown[] }).orders)
+          ? (parsed as { orders: unknown[] }).orders
+          : parsed &&
+            typeof parsed === "object" &&
+            Array.isArray((parsed as { items?: unknown[] }).items)
+          ? (parsed as { items: unknown[] }).items
+          : [];
+
+        for (const item of arr) {
+          if (!item || typeof item !== "object") continue;
+          if (!belongsToActiveTenant(item, cleanTenant)) continue;
+
+          // اگر کی ٹیننٹ اسکوپڈ نہیں ہے اور آئٹم میں کوئی tenantId/storeId موجود نہیں ہے تو اسے مکس نہ کریں
+          const explicitItemTenant = extractRecordTenantId(item);
+          if (!isTenantScopedKey && !explicitItemTenant) {
             continue;
           }
-          const raw = localStorage.getItem(k);
-          if (!raw) continue;
-          const parsed = JSON.parse(raw) as unknown;
-          const arr = Array.isArray(parsed)
-            ? parsed
-            : parsed &&
-              typeof parsed === "object" &&
-              Array.isArray((parsed as { orders?: unknown[] }).orders)
-            ? (parsed as { orders: unknown[] }).orders
-            : parsed &&
-              typeof parsed === "object" &&
-              Array.isArray((parsed as { items?: unknown[] }).items)
-            ? (parsed as { items: unknown[] }).items
-            : [];
 
-          for (const item of arr) {
-            if (!item || typeof item !== "object") continue;
-            const obj = item as Record<string, unknown>;
-            if (
-              "totalSale" in obj &&
-              ("itemName" in obj || "productName" in obj)
-            ) {
-              const sPrice = parseNumericValue(obj.salePrice ?? obj.unitPrice, 0);
-              const qNum = Math.max(
-                1,
-                parseInt(String(obj.qty ?? obj.quantity ?? "1"), 10) || 1
-              );
-              const tSale = parseNumericValue(obj.totalSale, sPrice * qNum);
-              const uCost = parseNumericValue(
-                obj.costPrice,
-                lookupUnitCost(
-                  String(obj.productId || ""),
-                  String(obj.sku || ""),
-                  sPrice,
+          const obj = item as Record<string, unknown>;
+          if (
+            "totalSale" in obj &&
+            ("itemName" in obj || "productName" in obj)
+          ) {
+            const sPrice = parseNumericValue(obj.salePrice ?? obj.unitPrice, 0);
+            const qNum = Math.max(
+              1,
+              parseInt(String(obj.qty ?? obj.quantity ?? "1"), 10) || 1
+            );
+            const tSale = parseNumericValue(obj.totalSale, sPrice * qNum);
+            const uCost = parseNumericValue(
+              obj.costPrice,
+              lookupUnitCost(
+                String(obj.productId || ""),
+                String(obj.sku || ""),
+                sPrice,
+                costMapArg
+              )
+            );
+            const tCost = parseNumericValue(obj.totalCost, uCost * qNum);
+            const prof = parseNumericValue(obj.profit, tSale - tCost);
+            const dtRaw = String(obj.date || "");
+            const dateVal =
+              /^\d{4}-\d{2}-\d{2}$/.test(dtRaw)
+                ? dtRaw
+                : getTodayDateStr(dtRaw ? new Date(dtRaw) : new Date());
+
+            pushSaleRow({
+              id: String(
+                obj.id ||
+                  `CHK-${cleanTenant}-${dateVal}-${Math.floor(
+                    1000 + Math.random() * 9000
+                  )}`
+              ),
+              date: dateVal,
+              time: String(obj.time || formatTimeStr(new Date())),
+              billRef: String(
+                obj.billRef || obj.billNo || obj.orderId || "Checkout Scan"
+              ),
+              itemName: String(
+                obj.itemName || obj.productName || obj.name || "Sold Item"
+              ),
+              qty: qNum,
+              costPrice: uCost,
+              salePrice: sPrice,
+              totalSale: tSale,
+              totalCost: tCost,
+              profit: prof,
+              tenantId: cleanTenant,
+            });
+          } else if (
+            Array.isArray(obj.items) ||
+            "subtotal" in obj ||
+            "total" in obj
+          ) {
+            const ord = obj as BackendOrder;
+            const dtSource =
+              ord.createdAt || ord.created_at || ord.date || new Date().toISOString();
+            const parsedDt = new Date(String(dtSource));
+            const safeDt = Number.isNaN(parsedDt.getTime()) ? new Date() : parsedDt;
+            const ordDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ord.date || ""))
+              ? String(ord.date)
+              : getTodayDateStr(safeDt);
+            const ordTime = formatTimeStr(safeDt);
+            const billRef = String(
+              ord.billNo ?? ord.orderNumber ?? ord.id ?? "Checkout Bill"
+            );
+
+            if (Array.isArray(ord.items) && ord.items.length > 0) {
+              ord.items.forEach((it, idx) => {
+                if (!belongsToActiveTenant(it, cleanTenant)) return;
+                const qty = Math.max(
+                  1,
+                  parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1
+                );
+                const uPrice = parseNumericValue(it.unitPrice ?? it.price, 0);
+                const pName = String(it.productName ?? it.name ?? "Scanned Item");
+                const matchedProd = prodList.find(
+                  (p) =>
+                    p.id === it.productId ||
+                    (it.sku &&
+                      p.sku &&
+                      p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
+                    p.name.toLowerCase() === pName.toLowerCase()
+                );
+                const uCost = lookupUnitCost(
+                  it.productId || matchedProd?.id,
+                  it.sku || matchedProd?.sku,
+                  uPrice,
                   costMapArg
-                )
-              );
-              const tCost = parseNumericValue(obj.totalCost, uCost * qNum);
-              const prof = parseNumericValue(obj.profit, tSale - tCost);
-              const dtRaw = String(obj.date || "");
-              const dateVal =
-                /^\d{4}-\d{2}-\d{2}$/.test(dtRaw)
-                  ? dtRaw
-                  : getTodayDateStr(dtRaw ? new Date(dtRaw) : new Date());
-
-              pushSaleRow({
-                id: String(
-                  obj.id ||
-                    `CHK-${dateVal}-${Math.floor(1000 + Math.random() * 9000)}`
-                ),
-                date: dateVal,
-                time: String(obj.time || formatTimeStr(new Date())),
-                billRef: String(
-                  obj.billRef || obj.billNo || obj.orderId || "Checkout Scan"
-                ),
-                itemName: String(
-                  obj.itemName || obj.productName || obj.name || "Sold Item"
-                ),
-                qty: qNum,
-                costPrice: uCost,
-                salePrice: sPrice,
-                totalSale: tSale,
-                totalCost: tCost,
-                profit: prof,
-              });
-            } else if (
-              Array.isArray(obj.items) ||
-              "subtotal" in obj ||
-              "total" in obj
-            ) {
-              const ord = obj as BackendOrder;
-              const dtSource =
-                ord.createdAt || ord.created_at || ord.date || new Date().toISOString();
-              const parsedDt = new Date(String(dtSource));
-              const safeDt = Number.isNaN(parsedDt.getTime()) ? new Date() : parsedDt;
-              const ordDate = /^\d{4}-\d{2}-\d{2}$/.test(String(ord.date || ""))
-                ? String(ord.date)
-                : getTodayDateStr(safeDt);
-              const ordTime = formatTimeStr(safeDt);
-              const billRef = String(
-                ord.billNo ?? ord.orderNumber ?? ord.id ?? "Checkout Bill"
-              );
-
-              if (Array.isArray(ord.items) && ord.items.length > 0) {
-                ord.items.forEach((it, idx) => {
-                  const qty = Math.max(
-                    1,
-                    parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1
-                  );
-                  const uPrice = parseNumericValue(it.unitPrice ?? it.price, 0);
-                  const pName = String(it.productName ?? it.name ?? "Scanned Item");
-                  const matchedProd = prodList.find(
-                    (p) =>
-                      p.id === it.productId ||
-                      (it.sku &&
-                        p.sku &&
-                        p.sku.toLowerCase() === String(it.sku).toLowerCase()) ||
-                      p.name.toLowerCase() === pName.toLowerCase()
-                  );
-                  const uCost = lookupUnitCost(
-                    it.productId || matchedProd?.id,
-                    it.sku || matchedProd?.sku,
-                    uPrice,
-                    costMapArg
-                  );
-                  const lineSale = Math.round(uPrice * qty * 100) / 100;
-                  const lineCost = Math.round(uCost * qty * 100) / 100;
-                  pushSaleRow({
-                    id: String(it.id || `ORD-${billRef}-${ordDate}-${idx}`),
-                    date: ordDate,
-                    time: ordTime,
-                    billRef,
-                    itemName: pName,
-                    qty,
-                    costPrice: uCost,
-                    salePrice: uPrice,
-                    totalSale: lineSale,
-                    totalCost: lineCost,
-                    profit: Math.round((lineSale - lineCost) * 100) / 100,
-                  });
+                );
+                const lineSale = Math.round(uPrice * qty * 100) / 100;
+                const lineCost = Math.round(uCost * qty * 100) / 100;
+                pushSaleRow({
+                  id: String(
+                    it.id || `ORD-${cleanTenant}-${billRef}-${ordDate}-${idx}`
+                  ),
+                  date: ordDate,
+                  time: ordTime,
+                  billRef,
+                  itemName: pName,
+                  qty,
+                  costPrice: uCost,
+                  salePrice: uPrice,
+                  totalSale: lineSale,
+                  totalCost: lineCost,
+                  profit: Math.round((lineSale - lineCost) * 100) / 100,
+                  tenantId: cleanTenant,
                 });
-              }
+              });
             }
           }
         }
@@ -554,7 +638,7 @@ export default function InventoryPage() {
     costMapArg: Record<string, number> = productCostMapRef.current,
     prodList: Product[] = productsRef.current
   ) {
-    const tenantKey = activeTenantIdRef.current || "default";
+    const tenantKey = sanitizeTenantId(activeTenantIdRef.current) || "default";
     const localCheckoutRows = extractCheckoutSalesFromLocalStorage(
       tenantKey,
       costMapArg,
@@ -562,18 +646,26 @@ export default function InventoryPage() {
     );
 
     const apiRows: SaleEntry[] = [];
-    for (const endpoint of ["/orders", "/sales", "/checkout/orders"]) {
+    for (const baseEndpoint of ["/orders", "/sales", "/checkout/orders"]) {
       try {
+        const sep = baseEndpoint.includes("?") ? "&" : "?";
+        const scopedEndpoint = `${baseEndpoint}${sep}tenantId=${encodeURIComponent(
+          tenantKey
+        )}&storeId=${encodeURIComponent(tenantKey)}`;
         const res = await apiFetch<
           { data?: BackendOrder[] } | BackendOrder[] | Record<string, unknown>
-        >(endpoint);
+        >(scopedEndpoint);
         const orderList: BackendOrder[] = Array.isArray(res)
           ? (res as BackendOrder[])
           : Array.isArray((res as { data?: unknown[] })?.data)
           ? ((res as { data: BackendOrder[] }).data)
           : [];
 
-        for (const ord of orderList) {
+        const tenantFilteredOrders = orderList.filter((ord) =>
+          belongsToActiveTenant(ord, tenantKey)
+        );
+
+        for (const ord of tenantFilteredOrders) {
           if (!ord || typeof ord !== "object") continue;
           const dtSource =
             ord.createdAt || ord.created_at || ord.date || new Date().toISOString();
@@ -589,6 +681,7 @@ export default function InventoryPage() {
 
           if (Array.isArray(ord.items) && ord.items.length > 0) {
             ord.items.forEach((it, idx) => {
+              if (!belongsToActiveTenant(it, tenantKey)) return;
               const qty = Math.max(
                 1,
                 parseInt(String(it.quantity ?? it.qty ?? "1"), 10) || 1
@@ -612,7 +705,9 @@ export default function InventoryPage() {
               const lineSale = Math.round(uPrice * qty * 100) / 100;
               const lineCost = Math.round(uCost * qty * 100) / 100;
               apiRows.push({
-                id: String(it.id || `API-ORD-${billRef}-${ordDate}-${idx}`),
+                id: String(
+                  it.id || `API-ORD-${tenantKey}-${billRef}-${ordDate}-${idx}`
+                ),
                 date: ordDate,
                 time: ordTime,
                 billRef,
@@ -623,13 +718,14 @@ export default function InventoryPage() {
                 totalSale: lineSale,
                 totalCost: lineCost,
                 profit: Math.round((lineSale - lineCost) * 100) / 100,
+                tenantId: tenantKey,
               });
             });
           } else {
             const totalAmount = parseNumericValue(ord.total ?? ord.subtotal, 0);
             if (totalAmount > 0) {
               apiRows.push({
-                id: `API-ORD-${billRef}-${ordDate}`,
+                id: `API-ORD-${tenantKey}-${billRef}-${ordDate}`,
                 date: ordDate,
                 time: ordTime,
                 billRef,
@@ -640,6 +736,7 @@ export default function InventoryPage() {
                 totalSale: totalAmount,
                 totalCost: totalAmount,
                 profit: 0,
+                tenantId: tenantKey,
               });
             }
           }
@@ -648,11 +745,14 @@ export default function InventoryPage() {
       } catch {}
     }
 
-    const combinedIncoming = [...apiRows, ...localCheckoutRows];
+    const combinedIncoming = [...apiRows, ...localCheckoutRows].filter((r) =>
+      belongsToActiveTenant(r, tenantKey)
+    );
     if (combinedIncoming.length === 0) return;
 
     setDailySaleEntries((prev) => {
-      const merged = mergeAndSaveSalesList(tenantKey, combinedIncoming, prev);
+      const cleanPrev = prev.filter((r) => belongsToActiveTenant(r, tenantKey));
+      const merged = mergeAndSaveSalesList(tenantKey, combinedIncoming, cleanPrev);
       setSalesEntries(merged);
       return merged;
     });
@@ -660,25 +760,44 @@ export default function InventoryPage() {
 
   function loadTenantLocalData(tenantKey: string): Record<string, number> {
     const cleanKey = sanitizeTenantId(tenantKey) || "default";
+    const tenantChanged = activeTenantIdRef.current !== cleanKey;
     activeTenantIdRef.current = cleanKey;
     setActiveTenantId(cleanKey);
+
+    // ٹیننٹ تبدیل ہونے پر پچھلی دکان کا ڈیٹا فوراً صاف کریں تاکہ مکس نہ ہو
+    if (tenantChanged) {
+      setProducts([]);
+      productsRef.current = [];
+      setPurchaseEntries([]);
+      setSalesEntries([]);
+      setDailySaleEntries([]);
+      setKhataEntries([]);
+      setCustomerAccounts([]);
+      setSavedBillImage("");
+    }
 
     const savedPurchases = safeJsonRead<PurchaseEntry[]>(
       buildTenantStorageKey(PURCHASE_LEDGER_BASE_KEY, cleanKey),
       []
-    );
+    ).filter((p) => belongsToActiveTenant(p, cleanKey));
+
     const savedSales = safeJsonRead<SaleEntry[]>(
       buildTenantStorageKey(SALES_LEDGER_BASE_KEY, cleanKey),
       []
-    );
+    ).filter((s) => belongsToActiveTenant(s, cleanKey));
+
     const savedKhata = safeJsonRead<KhataEntry[]>(
       buildTenantStorageKey(KHATA_LEDGER_BASE_KEY, cleanKey),
       []
-    );
+    ).filter((k) => belongsToActiveTenant(k, cleanKey));
+
     const savedCustomers = safeJsonRead<CustomerKhataAccount[]>(
       buildTenantStorageKey(CUSTOMER_KHATA_BOOK_BASE_KEY, cleanKey),
       []
-    ).filter((c) => c.id !== "CUST-SAMPLE-1");
+    ).filter(
+      (c) => c.id !== "CUST-SAMPLE-1" && belongsToActiveTenant(c, cleanKey)
+    );
+
     const savedCostMap = safeJsonRead<Record<string, number>>(
       buildTenantStorageKey(PRODUCT_COST_MAP_BASE_KEY, cleanKey),
       {}
@@ -722,7 +841,7 @@ export default function InventoryPage() {
   async function loadTenantAndStoreProfile() {
     const tokenTenant = getTenantIdFromToken();
     const initialMap = loadTenantLocalData(tokenTenant);
-    void loadProducts(initialMap);
+    void loadProducts(initialMap, tokenTenant);
     void syncCheckoutSalesNow(initialMap, productsRef.current);
 
     const endpoints = ["/auth/me", "/stores/current", "/store/profile"];
@@ -787,7 +906,7 @@ export default function InventoryPage() {
 
         if (resolvedTenant && resolvedTenant !== activeTenantIdRef.current) {
           const switchedMap = loadTenantLocalData(resolvedTenant);
-          void loadProducts(switchedMap);
+          void loadProducts(switchedMap, resolvedTenant);
           void syncCheckoutSalesNow(switchedMap, productsRef.current);
         }
 
@@ -873,25 +992,42 @@ export default function InventoryPage() {
     setStockPage(1);
   }, [searchQuery, products.length, pageSize]);
 
-  async function loadProducts(costMapArg: Record<string, number> = productCostMap) {
+  async function loadProducts(
+    costMapArg: Record<string, number> = productCostMap,
+    tenantKeyArg: string = activeTenantIdRef.current
+  ) {
+    const cleanTenant = sanitizeTenantId(tenantKeyArg) || "default";
     setLoading(true);
     try {
-      const res = await apiFetch<Product[] | { data?: Product[] }>("/products");
-      const list = Array.isArray(res)
+      const endpoint = `/products?tenantId=${encodeURIComponent(
+        cleanTenant
+      )}&storeId=${encodeURIComponent(cleanTenant)}`;
+      const res = await apiFetch<Product[] | { data?: Product[] }>(endpoint);
+      const rawList = Array.isArray(res)
         ? res
         : Array.isArray(res?.data)
         ? res.data
         : [];
-      setProducts(list);
-      productsRef.current = list;
+
+      // سخت فلٹر: صرف اسی دکان کی پروڈکٹس رکھیں جو activeTenantKey سے میل کھاتی ہوں
+      const tenantProducts = rawList.filter((p) =>
+        belongsToActiveTenant(p, cleanTenant)
+      );
+
+      if (activeTenantIdRef.current !== cleanTenant) return;
+
+      setProducts(tenantProducts);
+      productsRef.current = tenantProducts;
       if (costMapArg && Object.keys(costMapArg).length > 0) {
         setProductCostMap(costMapArg);
       }
-      void syncCheckoutSalesNow(costMapArg, list);
+      void syncCheckoutSalesNow(costMapArg, tenantProducts);
     } catch (err) {
       console.error("Load products error:", err);
     } finally {
-      setLoading(false);
+      if (activeTenantIdRef.current === cleanTenant) {
+        setLoading(false);
+      }
     }
   }
 
@@ -1128,13 +1264,15 @@ export default function InventoryPage() {
   }
 
   function appendPurchaseRecord(entry: Omit<PurchaseEntry, "id">) {
+    const cleanTenant = sanitizeTenantId(activeTenantIdRef.current) || "default";
     const newRow: PurchaseEntry = {
       ...entry,
-      id: `PUR-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      tenantId: cleanTenant,
+      id: `PUR-${cleanTenant}-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
     };
     const storageKey = buildTenantStorageKey(
       PURCHASE_LEDGER_BASE_KEY,
-      activeTenantIdRef.current
+      cleanTenant
     );
     setPurchaseEntries((prev) => {
       const next = [newRow, ...prev];
@@ -1173,9 +1311,10 @@ export default function InventoryPage() {
     const totalSale = Math.round(sPrice * qNum * 100) / 100;
     const totalCost = Math.round(uCost * qNum * 100) / 100;
     const profit = Math.round((totalSale - totalCost) * 100) / 100;
+    const tenantKey = sanitizeTenantId(activeTenantIdRef.current) || "default";
 
     const newSaleRow: SaleEntry = {
-      id: `SALE-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+      id: `SALE-${tenantKey}-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
       date: activeDate,
       time: formatTimeStr(now),
       billRef: params.billRef?.trim() || "QR / Checkout Bill",
@@ -1186,11 +1325,12 @@ export default function InventoryPage() {
       totalSale,
       totalCost,
       profit,
+      tenantId: tenantKey,
     };
 
-    const tenantKey = activeTenantIdRef.current || "default";
     setDailySaleEntries((prev) => {
-      const merged = mergeAndSaveSalesList(tenantKey, [newSaleRow], prev);
+      const cleanPrev = prev.filter((r) => belongsToActiveTenant(r, tenantKey));
+      const merged = mergeAndSaveSalesList(tenantKey, [newSaleRow], cleanPrev);
       setSalesEntries(merged);
       return merged;
     });
@@ -1217,13 +1357,15 @@ export default function InventoryPage() {
   }
 
   function saveCustomerAccounts(nextList: CustomerKhataAccount[]) {
+    const cleanTenant = sanitizeTenantId(activeTenantIdRef.current) || "default";
     const storageKey = buildTenantStorageKey(
       CUSTOMER_KHATA_BOOK_BASE_KEY,
-      activeTenantIdRef.current
+      cleanTenant
     );
     setCustomerAccounts(nextList);
     safeJsonWrite(storageKey, nextList);
   }
+
   function getInitials(fullName: string): string {
     const parts = fullName.trim().split(/\s+/).filter(Boolean);
     if (parts.length === 0) return "CU";
@@ -1440,6 +1582,7 @@ export default function InventoryPage() {
           formData.append("image", blob, "wholesale-bill.jpg");
           formData.append("scan_type", "wholesale_purchase_bill");
           formData.append("tenant_id", activeTenantIdRef.current);
+          formData.append("tenantId", activeTenantIdRef.current);
           formData.append("token", getToken() ?? "");
 
           const res = await fetch(N8N_PRODUCT_SCAN_WEBHOOK_URL, {
@@ -1548,7 +1691,7 @@ export default function InventoryPage() {
 
                 const lineAmountNum =
                   costNum > 0
-                    ? Math.round(costNum * qtyNum * 100) / 100
+                    ? Math.round(costNum * qNum * 100) / 100
                     : Math.round(rawAmountNum * 100) / 100;
 
                 const rawSale = it?.sale_price ?? it?.retail_price;
@@ -1740,6 +1883,7 @@ export default function InventoryPage() {
     itemAmount?: number;
     billLabel?: string;
   }): Promise<{ saved: boolean; backendError?: string }> {
+    const cleanTenant = sanitizeTenantId(activeTenantIdRef.current) || "default";
     const cleanName = params.itemName.trim();
     const cleanSku =
       params.itemSku.trim() || `SKU-${Math.floor(1000 + Math.random() * 9000)}`;
@@ -1785,6 +1929,7 @@ export default function InventoryPage() {
       costPrice: effectiveUnitCost,
       salePrice: parsedSale,
       totalPurchase: lineTotal,
+      tenantId: cleanTenant,
     });
 
     setProducts((prev) => {
@@ -1807,11 +1952,14 @@ export default function InventoryPage() {
       } else {
         nextList = [
           {
-            id: `LOCAL-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+            id: `LOCAL-${cleanTenant}-${Date.now()}-${Math.floor(
+              100 + Math.random() * 900
+            )}`,
             name: cleanName,
             sku: cleanSku,
             price: String(parsedSale),
             stockQty: nextStockQty,
+            tenantId: cleanTenant,
           } as unknown as Product,
           ...prev,
         ];
@@ -1831,6 +1979,8 @@ export default function InventoryPage() {
             sku: cleanSku,
             price: String(parsedSale),
             stockQty: nextStockQty,
+            tenantId: cleanTenant,
+            storeId: cleanTenant,
           }),
         }),
         new Promise<never>((_, reject) =>
@@ -1843,7 +1993,11 @@ export default function InventoryPage() {
           ? (response as { data: Product }).data
           : (response as Product);
 
-      if (createdProduct && createdProduct.id) {
+      if (
+        createdProduct &&
+        createdProduct.id &&
+        belongsToActiveTenant(createdProduct, cleanTenant)
+      ) {
         saveCostMapping(createdProduct.id, createdProduct.sku, effectiveUnitCost);
         setProducts((prev) => {
           const withoutLocal = prev.filter(
@@ -2043,7 +2197,7 @@ export default function InventoryPage() {
       }
 
       alert(`کامیابی کے ساتھ ${importedCount} آئٹمز امپورٹ ہو گئی ہیں!`);
-      void loadProducts();
+      void loadProducts(productCostMapRef.current, activeTenantIdRef.current);
     };
     reader.readAsText(file);
   };
@@ -2101,7 +2255,10 @@ export default function InventoryPage() {
     document.body.removeChild(link);
   }
 
+  const currentTenant = sanitizeTenantId(activeTenantId) || "default";
+
   const filteredProducts = products.filter((p) => {
+    if (!belongsToActiveTenant(p, currentTenant)) return false;
     if (isCheckoutOrSaleProductItem(p)) return false;
     const matchesSearch =
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -2126,16 +2283,23 @@ export default function InventoryPage() {
     return sum + uCost * Number(p.stockQty || 0);
   }, 0);
 
-  const todayPurchases = purchaseEntries.filter((e) => e.date === todayDate);
+  const tenantPurchases = purchaseEntries.filter((e) =>
+    belongsToActiveTenant(e, currentTenant)
+  );
+  const tenantDailySales = dailySaleEntries.filter((e) =>
+    belongsToActiveTenant(e, currentTenant)
+  );
+
+  const todayPurchases = tenantPurchases.filter((e) => e.date === todayDate);
   const todayPurchaseQty = todayPurchases.reduce((s, e) => s + e.qty, 0);
 
-  const todaySales = dailySaleEntries.filter((e) => e.date === todayDate);
+  const todaySales = tenantDailySales.filter((e) => e.date === todayDate);
   const todaySoldQty = todaySales.reduce((s, e) => s + e.qty, 0);
   const todaySalesTotal = todaySales.reduce((s, e) => s + e.totalSale, 0);
   const todayCostOfSold = todaySales.reduce((s, e) => s + e.totalCost, 0);
   const todayNetProfit = todaySales.reduce((s, e) => s + e.profit, 0);
 
-  const filteredDailySales = dailySaleEntries.filter((e) =>
+  const filteredDailySales = tenantDailySales.filter((e) =>
     saleFilterDate ? e.date === saleFilterDate : true
   );
   const totalSalePages = Math.max(
@@ -2170,16 +2334,16 @@ export default function InventoryPage() {
 
   const allDates = Array.from(
     new Set([
-      ...purchaseEntries.map((p) => p.date),
-      ...dailySaleEntries.map((s) => s.date),
+      ...tenantPurchases.map((p) => p.date),
+      ...tenantDailySales.map((s) => s.date),
       ...khataEntries.map((k) => k.date),
       todayDate,
     ])
   ).sort((a, b) => b.localeCompare(a));
 
   const dateClosingSummary = allDates.map((d) => {
-    const pRows = purchaseEntries.filter((p) => p.date === d);
-    const sRows = dailySaleEntries.filter((s) => s.date === d);
+    const pRows = tenantPurchases.filter((p) => p.date === d);
+    const sRows = tenantDailySales.filter((s) => s.date === d);
     const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
     const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
     const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
@@ -2243,9 +2407,9 @@ export default function InventoryPage() {
               📞 {storeInfo.phone}
             </span>
           )}
-          {(storeInfo.tenantId || activeTenantId) && (
+          {(storeInfo.tenantId || currentTenant) && (
             <span className="rounded bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
-              Tenant: {storeInfo.tenantId || activeTenantId}
+              Tenant: {storeInfo.tenantId || currentTenant}
             </span>
           )}
           <span className="rounded bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
@@ -2256,7 +2420,7 @@ export default function InventoryPage() {
 
       <PageHeader
         title="DAILY SALE & STOCK — Inventory Management"
-        description="چیک آؤٹ سے آنے والی سیل DAILY SALE کے نیچے اور نئے اسٹاک کی تفصیل STOCK کے نیچے — دونوں میں Page 1, 2, 3 پیجینیشن کے ساتھ۔"
+        description="چیک آؤٹ سے آنے والی سیل DAILY SALE کے نیچے اور نئے اسٹاک کی تفصیل STOCK کے نیچے — ہر دکان کا ڈیٹا صرف اسی دکان تک محدود۔"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -2867,7 +3031,7 @@ export default function InventoryPage() {
                 STOCK ({filteredProducts.length})
               </CardTitle>
               <p className="mt-1 text-xs text-slate-500">
-                یہاں صرف STOCK کی انٹری/تفصیل آتی ہے — سیل آئٹمز STOCK میں نہیں جاتیں۔ اگر کوئی پرانی سیل آئٹم یہاں دکھ رہی ہو تو &quot;→ Sale&quot; دبا کر DAILY SALE میں بھیج دیں[cite: 2]۔
+                یہاں صرف موجودہ دکان کی STOCK کی انٹری/تفصیل آتی ہے — سیل آئٹمز STOCK میں نہیں جاتیں۔
               </p>
               <p className="mt-1 text-xs font-medium text-slate-600">
                 Total Stock Value: <strong>{formatMoney(totalStockValue)}</strong>
@@ -3019,14 +3183,14 @@ export default function InventoryPage() {
                 variant={activeLedgerTab === "purchase" ? "default" : "outline"}
                 onClick={() => setActiveLedgerTab("purchase")}
               >
-                STOCK Purchase ({purchaseEntries.length})
+                STOCK Purchase ({tenantPurchases.length})
               </Button>
               <Button
                 type="button"
                 variant={activeLedgerTab === "sales" ? "default" : "outline"}
                 onClick={() => setActiveLedgerTab("sales")}
               >
-                Daily Sales ({dailySaleEntries.length})
+                Daily Sales ({tenantDailySales.length})
               </Button>
               <Button
                 type="button"
@@ -3053,7 +3217,7 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {purchaseEntries.map((row) => (
+                  {tenantPurchases.map((row) => (
                     <tr key={row.id} className="border-b border-slate-100">
                       <td className="py-2 pr-3 text-xs">
                         {row.date} {row.time}
@@ -3086,7 +3250,7 @@ export default function InventoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {dailySaleEntries.map((row) => (
+                  {tenantDailySales.map((row) => (
                     <tr key={row.id} className="border-b border-slate-100">
                       <td className="py-2 pr-3 text-xs">
                         {row.date} {row.time}
