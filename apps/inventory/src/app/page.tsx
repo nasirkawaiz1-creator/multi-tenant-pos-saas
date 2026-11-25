@@ -428,10 +428,6 @@ export default function InventoryPage() {
     return merged;
   }
 
-  /**
-   * صرف موجودہ دکان (tenantKey) کے لیے لوکل اسٹوریج سے سیلز نکالے گا۔
-   * دوسری دکانوں کے ریکارڈز یا غیر متعلقہ کیز کو بالکل شامل نہیں کرے گا۔
-   */
   function extractCheckoutSalesFromLocalStorage(
     tenantKey: string,
     costMapArg: Record<string, number>,
@@ -1566,12 +1562,13 @@ export default function InventoryPage() {
       async (blob) => {
         if (!blob) {
           setScanningPhoto(false);
+          stopCamera();
           setError("❌ تصویر کیپچر نہیں ہو سکی، دوبارہ کوشش کریں۔");
           return;
         }
 
         const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 25000);
+        const timeoutId = window.setTimeout(() => controller.abort(), 20000);
 
         try {
           const formData = new FormData();
@@ -1832,12 +1829,13 @@ export default function InventoryPage() {
               `HTTP 200 (Empty items): ${rawText.slice(0, 180)}`
             );
             setError(
-              "بل کی تصویر محفوظ ہے، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر یا ڈبہ بنا کر سیو کر سکتے ہیں۔"
+              "بل کی تصویر محفوظ ہے، لیکن آئٹم واضح نہیں پڑھی جا سکی — آپ آئٹم کا نام لکھ کر سیو کر سکتے ہیں۔"
             );
             document.getElementById("manual-item-input")?.focus();
           }
         } catch (err) {
           console.error("Wholesale scan error:", err);
+          stopCamera();
           const is502OrTimeout =
             err instanceof Error &&
             (err.message === "HTTP_502" || err.name === "AbortError");
@@ -1850,14 +1848,14 @@ export default function InventoryPage() {
           }
           if (is502OrTimeout) {
             setError(
-              "اسکین سرور عارضی طور پر مصروف ہے (502/Timeout) — بل کی تصویر محفوظ ہے، آئٹم/بل کے خانے میں براہ راست لکھ کر سیو کر لیں۔"
+              "اسکین سرور عارضی طور پر مصروف ہے — بل کی تصویر محفوظ ہے، آئٹم کا نام اور ریٹ لکھ کر Save to STOCK دبا دیں۔"
             );
             document.getElementById("manual-item-input")?.focus();
           } else {
             setError(
               `❌ اسکین رسپانس میں خرابی (${
                 err instanceof Error ? err.message : "نامعلوم"
-              }) — بل کی تصویر محفوظ ہے، آپ تفصیل براہِ راست بھی لکھ کر سیو کر سکتے ہیں۔`
+              }) — بل کی تصویر محفوظ ہے، آپ تفصیل براہِ راست لکھ کر سیو کر سکتے ہیں۔`
             );
           }
         } finally {
@@ -2328,36 +2326,6 @@ export default function InventoryPage() {
     .reduce((s, k) => s + k.amount, 0);
   const khataHisabBalance = todaySalesTotal + todayCashIn - todayKhataOut;
 
-  const allDates = Array.from(
-    new Set([
-      ...tenantPurchases.map((p) => p.date),
-      ...tenantDailySales.map((s) => s.date),
-      ...khataEntries.map((k) => k.date),
-      todayDate,
-    ])
-  ).sort((a, b) => b.localeCompare(a));
-
-  const dateClosingSummary = allDates.map((d) => {
-    const pRows = tenantPurchases.filter((p) => p.date === d);
-    const sRows = tenantDailySales.filter((s) => s.date === d);
-    const pTotal = pRows.reduce((acc, r) => acc + r.totalPurchase, 0);
-    const pQty = pRows.reduce((acc, r) => acc + r.qty, 0);
-    const sTotal = sRows.reduce((acc, r) => acc + r.totalSale, 0);
-    const sQty = sRows.reduce((acc, r) => acc + r.qty, 0);
-    const profitTotal = sRows.reduce((acc, r) => acc + r.profit, 0);
-    const isClosed = d < todayDate;
-
-    return {
-      date: d,
-      pQty,
-      pTotal,
-      sQty,
-      sTotal,
-      profitTotal,
-      isClosed,
-    };
-  });
-
   const scannedItemsSum = scannedBillItems.reduce(
     (sum, item) => sum + item.amount,
     0
@@ -2522,7 +2490,7 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      {/* DAILY SALE خانہ اور اس کے بالکل نیچے روزانہ سیل کی تفصیل + Page 1, 2, 3 */}
+      {/* DAILY SALE خانہ اور اس کے بالکل نیچے روزانہ سیل کی تفصیل */}
       <Card className="mb-6 border-emerald-300 bg-emerald-50/30">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3018,7 +2986,7 @@ export default function InventoryPage() {
         </Card>
       </div>
 
-      {/* STOCK خانہ اور اس کے بالکل نیچے اسٹاک کی تفصیل + Page 1, 2, 3 */}
+      {/* STOCK خانہ اور اس کے بالکل نیچے اسٹاک کی تفصیل */}
       <Card className="mb-6">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3633,44 +3601,6 @@ export default function InventoryPage() {
               </div>
             );
           })()}
-
-          <div className="border-t border-slate-200 pt-4">
-            <h3 className="mb-2 text-xs font-bold uppercase text-slate-600">
-              Daily Rollover Summary
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                    <th className="py-2 pr-3">Date</th>
-                    <th className="py-2 pr-3">Purchase</th>
-                    <th className="py-2 pr-3">Sales</th>
-                    <th className="py-2 pr-3">Profit</th>
-                    <th className="py-2">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dateClosingSummary.map((day) => (
-                    <tr key={day.date} className="border-b border-slate-100">
-                      <td className="py-2 pr-3 font-medium">{day.date}</td>
-                      <td className="py-2 pr-3">
-                        {formatMoney(day.pTotal)} ({day.pQty})
-                      </td>
-                      <td className="py-2 pr-3">
-                        {formatMoney(day.sTotal)} ({day.sQty})
-                      </td>
-                      <td className="py-2 pr-3">{formatMoney(day.profitTotal)}</td>
-                      <td className="py-2">
-                        <Badge variant={day.isClosed ? "default" : "success"}>
-                          {day.isClosed ? "Closed" : "Open"}
-                        </Badge>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
         </CardContent>
       </Card>
     </AppShell>
