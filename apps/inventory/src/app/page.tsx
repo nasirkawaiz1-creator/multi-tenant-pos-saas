@@ -3605,4 +3605,4 @@ export default function InventoryPage() {
       </Card>
     </AppShell>
   );
-  }
+}
