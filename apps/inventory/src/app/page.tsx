@@ -401,6 +401,19 @@ export default function InventoryPage() {
     } catch {}
   }
 
+  function clearSavedBillImage(tenantOverride?: string) {
+    setSavedBillImage("");
+    try {
+      if (typeof window !== "undefined") {
+        const cleanTenant =
+          sanitizeTenantId(tenantOverride || activeTenantIdRef.current) || "default";
+        localStorage.removeItem(
+          buildTenantStorageKey(LAST_BILL_IMAGE_BASE_KEY, cleanTenant)
+        );
+      }
+    } catch {}
+  }
+
   function mergeAndSaveSalesList(
     tenantKey: string,
     incomingRows: SaleEntry[],
@@ -766,8 +779,9 @@ export default function InventoryPage() {
       setDailySaleEntries([]);
       setKhataEntries([]);
       setCustomerAccounts([]);
-      setSavedBillImage("");
     }
+
+    clearSavedBillImage(cleanKey);
 
     const savedPurchases = safeJsonRead<PurchaseEntry[]>(
       buildTenantStorageKey(PURCHASE_LEDGER_BASE_KEY, cleanKey),
@@ -795,16 +809,6 @@ export default function InventoryPage() {
       buildTenantStorageKey(PRODUCT_COST_MAP_BASE_KEY, cleanKey),
       {}
     );
-
-    try {
-      if (typeof window !== "undefined") {
-        const cachedBillImg =
-          localStorage.getItem(
-            buildTenantStorageKey(LAST_BILL_IMAGE_BASE_KEY, cleanKey)
-          ) || "";
-        setSavedBillImage(cachedBillImg);
-      }
-    } catch {}
 
     const extraLocalCheckout = extractCheckoutSalesFromLocalStorage(
       cleanKey,
@@ -2050,15 +2054,22 @@ export default function InventoryPage() {
       setScannedBillItems([]);
       setScannedBillTotal(null);
       setEditingIndex(null);
+      setSupplierOrBill("");
+      setName("");
+      setSku("");
+      setCostPrice("");
+      setSalePrice("");
+      setStockQty("100");
+      clearSavedBillImage();
       setActiveLedgerTab("purchase");
 
       if (failCount === 0) {
         setError(
-          `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز STOCK اور Purchase Ledger میں محفوظ ہو گئیں!`
+          `✔ "${activeBillLabel}" کے بل کی تمام آئٹمز سیو ہو گئیں اور بل اسکرین سے صاف کر دیا گیا ہے — اب نیا بل اسکین کریں۔`
         );
       } else {
         setError(
-          `✔ آئٹمز لوکل STOCK / Purchase Ledger میں محفوظ ہو گئیں، تاہم سرور پر ${failCount} آئٹمز سنک نہیں ہو سکیں (${lastBackendErr})۔`
+          `✔ آئٹمز لوکل STOCK / Purchase Ledger میں محفوظ ہو گئیں اور بل صاف ہو گیا (سرور سنک نوٹ: ${lastBackendErr})۔`
         );
       }
     } catch (err) {
@@ -2110,15 +2121,19 @@ export default function InventoryPage() {
       setCostPrice("");
       setSalePrice("");
       setStockQty("100");
+      setScannedBillItems([]);
+      setScannedBillTotal(null);
+      setEditingIndex(null);
+      clearSavedBillImage();
       setActiveLedgerTab("purchase");
 
       if (!res.backendError) {
         setError(
-          "✔ نیا اسٹاک انونٹری اور ہول سیل Purchase Ledger میں محفوظ ہو گیا ہے!"
+          "✔ نیا اسٹاک محفوظ ہو گیا ہے اور پرانا بل اسکرین سے ختم کر دیا گیا ہے!"
         );
       } else {
         setError(
-          `✔ اسٹاک لوکل لیجر میں محفوظ ہو گیا ہے، لیکن سرور سنک میں مسئلہ آیا (${res.backendError})۔`
+          `✔ اسٹاک لوکل لیجر میں محفوظ ہو گیا ہے اور بل صاف ہو گیا (${res.backendError})۔`
         );
       }
     } catch (err) {
@@ -2740,19 +2755,28 @@ export default function InventoryPage() {
 
             {savedBillImage && (
               <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-                <div className="mb-1.5 flex items-center justify-between text-xs text-slate-600">
-                  <span className="font-semibold">محفوظ شدہ بل کی تصویر</span>
-                  <a
-                    href={savedBillImage}
-                    download={`bill-${todayDate}.jpg`}
-                    className="font-medium text-blue-600 underline"
-                  >
-                    تصویر ڈاؤن لوڈ کریں
-                  </a>
+                <div className="mb-1.5 flex items-center justify-between gap-2 text-xs text-slate-600">
+                  <span className="font-semibold">موجودہ بل کی تصویر (سیو ہوتے ہی ہٹ جائے گی)</span>
+                  <div className="flex items-center gap-3">
+                    <a
+                      href={savedBillImage}
+                      download={`bill-${todayDate}.jpg`}
+                      className="font-medium text-blue-600 underline"
+                    >
+                      تصویر ڈاؤن لوڈ کریں
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => clearSavedBillImage()}
+                      className="rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
+                    >
+                      ✕ ہٹائیں
+                    </button>
+                  </div>
                 </div>
                 <img
                   src={savedBillImage}
-                  alt="Saved Bill"
+                  alt="Scanned Bill"
                   className="max-h-44 w-full rounded border bg-white object-contain"
                 />
               </div>
