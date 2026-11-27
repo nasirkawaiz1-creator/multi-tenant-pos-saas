@@ -128,11 +128,14 @@ function SubscriptionCard({ tenant }: { tenant: Tenant | null }) {
   );
 }
 
-// Self-service Change Password card for store owner privacy
+// Self-service Change Password card for store owner privacy with show/hide toggle
 function ChangePasswordCard() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
@@ -181,39 +184,78 @@ function ChangePasswordCard() {
         <form onSubmit={handleChangePassword} className="space-y-3">
           <div>
             <Label htmlFor="current-password">Current Password</Label>
-            <Input
-              id="current-password"
-              type="password"
-              placeholder="Enter current password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              required
-            />
+            <div className="relative mt-1">
+              <Input
+                id="current-password"
+                type={showCurrent ? "text" : "password"}
+                placeholder="Enter current password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="pr-10"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowCurrent((prev) => !prev)}
+                aria-label={showCurrent ? "Hide current password" : "Show current password"}
+                title={showCurrent ? "Hide password" : "Show password"}
+                className="absolute inset-y-0 right-2.5 flex items-center text-slate-500 hover:text-slate-800"
+              >
+                {showCurrent ? "🙈" : "👁"}
+              </button>
+            </div>
           </div>
+
           <div>
             <Label htmlFor="new-password">New Password (min 8 characters)</Label>
-            <Input
-              id="new-password"
-              type="password"
-              placeholder="Enter new password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              required
-            />
+            <div className="relative mt-1">
+              <Input
+                id="new-password"
+                type={showNew ? "text" : "password"}
+                placeholder="Enter new password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="pr-10"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowNew((prev) => !prev)}
+                aria-label={showNew ? "Hide new password" : "Show new password"}
+                title={showNew ? "Hide password" : "Show password"}
+                className="absolute inset-y-0 right-2.5 flex items-center text-slate-500 hover:text-slate-800"
+              >
+                {showNew ? "🙈" : "👁"}
+              </button>
+            </div>
           </div>
+
           <div>
             <Label htmlFor="confirm-password">Confirm New Password</Label>
-            <Input
-              id="confirm-password"
-              type="password"
-              placeholder="Re-enter new password"
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              required
-            />
+            <div className="relative mt-1">
+              <Input
+                id="confirm-password"
+                type={showConfirm ? "text" : "password"}
+                placeholder="Re-enter new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="pr-10"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowConfirm((prev) => !prev)}
+                aria-label={showConfirm ? "Hide confirm password" : "Show confirm password"}
+                title={showConfirm ? "Hide password" : "Show password"}
+                className="absolute inset-y-0 right-2.5 flex items-center text-slate-500 hover:text-slate-800"
+              >
+                {showConfirm ? "🙈" : "👁"}
+              </button>
+            </div>
           </div>
+
           {error && <p className="text-sm text-red-600">{error}</p>}
-          {success && <p className="text-sm text-emerald-700 font-medium">{success}</p>}
+          {success && <p className="text-sm font-medium text-emerald-700">{success}</p>}
           <Button type="submit" disabled={loading}>
             {loading ? "Updating..." : "Update Password"}
           </Button>
@@ -271,42 +313,3 @@ export default function DashboardPage() {
           <Button variant="outline" onClick={handleLogout}>
             Sign out
           </Button>
-        }
-      />
-
-      <div className="grid gap-6 md:grid-cols-2">
-        <a href="/inventory">
-          <Card className="transition-shadow hover:shadow-md">
-            <CardHeader>
-              <CardTitle>Inventory Manager</CardTitle>
-              <CardDescription>
-                Manage products, categories, and stock levels. Microfrontend zone deployed independently.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button>Open Inventory →</Button>
-            </CardContent>
-          </Card>
-        </a>
-
-        <a href="/checkout">
-          <Card className="transition-shadow hover:shadow-md">
-            <CardHeader>
-              <CardTitle>Checkout Terminal</CardTitle>
-              <CardDescription>
-                POS-style checkout flow with cart, tax calculation, and receipt generation.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button>Open Checkout →</Button>
-            </CardContent>
-          </Card>
-        </a>
-
-        <SubscriptionCard tenant={tenant} />
-        <ChangePasswordCard />
-        <VisitingCard />
-      </div>
-    </AppShell>
-  );
-}
