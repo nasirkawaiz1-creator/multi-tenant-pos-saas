@@ -313,3 +313,42 @@ export default function DashboardPage() {
           <Button variant="outline" onClick={handleLogout}>
             Sign out
           </Button>
+        }
+      />
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <a href="/inventory">
+          <Card className="transition-shadow hover:shadow-md">
+            <CardHeader>
+              <CardTitle>Inventory Manager</CardTitle>
+              <CardDescription>
+                Manage products, categories, and stock levels. Microfrontend zone deployed independently.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button>Open Inventory →</Button>
+            </CardContent>
+          </Card>
+        </a>
+
+        <a href="/checkout">
+          <Card className="transition-shadow hover:shadow-md">
+            <CardHeader>
+              <CardTitle>Checkout Terminal</CardTitle>
+              <CardDescription>
+                POS-style checkout flow with cart, tax calculation, and receipt generation.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button>Open Checkout →</Button>
+            </CardContent>
+          </Card>
+        </a>
+
+        <SubscriptionCard tenant={tenant} />
+        <ChangePasswordCard />
+        <VisitingCard />
+      </div>
+    </AppShell>
+  );
+}
